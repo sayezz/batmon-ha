@@ -162,7 +162,10 @@ def test_table_shape():
         "disable_temperature_sensors", "gps_locked_charging", "gps_locked_discharging",
     })
     assert CRITICAL == frozenset(n for n, s in SETTINGS.items() if s.danger == "critical")
-    assert UNVERIFIED_WRITE == {"smart_sleep_voltage"}
+    assert UNVERIFIED_WRITE == {
+        "smart_sleep_voltage", "heating_start_temp", "heating_stop_temp",
+        "discharge_utp", "discharge_utpr", "precharge_time",
+    }
     for name, s in SETTINGS.items():
         assert s.name == name
         assert s.kind in ("number", "switch")
