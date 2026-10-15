@@ -46,8 +46,10 @@ def _utc(t: float, fmt: str) -> str:
 class JkSettingsService:
 
     def __init__(self, alias: str, writable: frozenset, workdir: str = '.', refresh_period: float = 300,
-                 clock=time.time, config_error: Optional[str] = None):
+                 clock=time.time, config_error: Optional[str] = None, refresh_retry_s: float = 60):
         self.alias = alias
+        self.refresh_retry_s = refresh_retry_s
+        self._refresh_failed_at = None  # time of the last failed refresh attempt
         self.writable = frozenset(writable)
         self.workdir = workdir
         self.refresh_period = refresh_period
@@ -84,7 +86,13 @@ class JkSettingsService:
         now = self.clock()
         if (self._last_refresh is None or bms.settings is None or has_pending
                 or now - self._last_refresh >= self.refresh_period):
+            if self._refresh_failed_at is not None and now - self._refresh_failed_at < self.refresh_retry_s:
+                # back off after a failed refresh, so a settings read that keeps failing does not
+                # fail every sample; pending requests stay queued (no stale/missing settings)
+                return
+            self._refresh_failed_at = now  # cleared on success; set before the await
             await bms.refresh_settings()
+            self._refresh_failed_at = None
             self._last_refresh = now
             publish.states(bms.settings)
 
@@ -143,6 +151,8 @@ class JkSettingsService:
             self._reject(publish, bms, name, shown, reason)
             raise
 
+        if not res.ok:
+            self.locked = True  # before any file I/O
         self._audit(res.name, res.before, res.requested, res.after, res.ok, res.reason)
         publish.states(bms.settings)
         unit = SETTINGS[name].unit or ''
@@ -150,7 +160,6 @@ class JkSettingsService:
             text = 'OK %s %s -> %s%s' % (name, format_value(name, res.before), format_value(name, res.after), unit)
             logger.info('%s settings: %s', self.alias, text)
         else:
-            self.locked = True
             text = 'FAILED %s %s read back %s; writes locked' % (
                 name, format_value(name, res.requested), format_value(name, res.after))
             logger.error('%s settings: %s (%s)', self.alias, text, res.reason)
@@ -217,9 +226,12 @@ class JkSettingsService:
     def _audit(self, name, before, requested, after, ok, reason):
         line = dict(time=_utc(self.clock(), '%Y-%m-%dT%H:%M:%SZ'), alias=self.alias, name=name, before=before,
                     requested=requested, after=after, ok=ok, reason=reason, source='mqtt')
-        os.makedirs(self.workdir or '.', exist_ok=True)
-        with open(os.path.join(self.workdir, 'settings_audit.jsonl'), 'a') as f:
-            f.write(json.dumps(line) + '\n')
+        try:
+            os.makedirs(self.workdir or '.', exist_ok=True)
+            with open(os.path.join(self.workdir, 'settings_audit.jsonl'), 'a') as f:
+                f.write(json.dumps(line) + '\n')
+        except OSError as e:  # the write already happened; keep publishing the result
+            logger.error('%s settings audit write failed: %s (%s)', self.alias, e, json.dumps(line))
 
 
 _UNCHANGED = object()

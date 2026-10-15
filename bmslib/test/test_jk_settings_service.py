@@ -231,6 +231,68 @@ def test_ble_error_propagates_and_keeps_queue(tmp_path):
     assert pub.texts[-1] == 'OK charge_utpr 5 -> 6°C'
 
 
+def test_refresh_failure_backs_off(tmp_path):
+    bms, client = _make()
+    now = [T0]
+    svc = _service(tmp_path, writable={'charge_utp'}, clock=lambda: now[0], refresh_retry_s=60)
+    pub = FakePublish()
+    calls = []
+    orig = bms.refresh_settings
+
+    async def broken():
+        calls.append(now[0])
+        raise TimeoutError('no settings frame')
+
+    bms.refresh_settings = broken
+    svc.enqueue('charge_utp', '3')
+    try:
+        _tick(svc, bms, pub)
+        assert False, 'refresh error must propagate'
+    except TimeoutError:
+        pass
+    assert len(calls) == 1
+
+    now[0] += 59  # inside the backoff window: no refresh, no raise, request stays queued
+    _tick(svc, bms, pub)
+    assert len(calls) == 1
+    assert pub.calls == [] and client.writes == []
+
+    now[0] += 1  # window over: tries again
+    try:
+        _tick(svc, bms, pub)
+        assert False, 'refresh error must propagate'
+    except TimeoutError:
+        pass
+    assert len(calls) == 2
+
+    bms.refresh_settings = orig  # link recovers: the queued request is handled
+    now[0] += 60
+    _tick(svc, bms, pub)
+    assert pub.texts == ['OK charge_utp 2 -> 3°C']
+
+
+def test_audit_failure_still_locks_and_reports(tmp_path, monkeypatch):
+    bms, client = _make(ignore_writes=True)
+    svc, pub = _service(tmp_path, writable={'charge_utp'}), FakePublish()
+    import builtins
+    real_open = builtins.open
+
+    def failing_open(path, *a, **kw):
+        if str(path).endswith('settings_audit.jsonl'):
+            raise OSError(28, 'No space left on device')
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(builtins, 'open', failing_open)
+    svc.enqueue('charge_utp', '3')
+    _tick(svc, bms, pub)
+    assert svc.locked is True
+    assert pub.texts[-1] == 'FAILED charge_utp 3 read back 2; writes locked'
+    svc.enqueue('charge_utp', '4')
+    _tick(svc, bms, pub)
+    assert pub.texts[-1].endswith('writes locked after a failed read-back; restart batmon')
+    assert len(client.writes) == 1
+
+
 def test_no_settings_support_noop(tmp_path):
     bms, client = _make()
     bms.is_new_11fw_32s = False
