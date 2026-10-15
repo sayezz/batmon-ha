@@ -1,0 +1,245 @@
+"""
+JK settings service: queues settings change requests (from MQTT) and applies them
+inside the sampler loop, right after `bms.fetch()`, so writes never race the
+regular polling on the same BLE link.
+
+Per request: parse payload -> whitelist -> unchanged? -> encode -> cross-field
+validation -> locked? -> one-time backup -> write with read-back -> audit.
+A read-back mismatch locks all further writes until batmon restarts.
+"""
+
+import collections
+import json
+import math
+import os
+import threading
+import time
+from typing import Optional
+
+from bmslib.models.jk_settings import (SETTINGS, SettingError, encode_setting, format_value,
+                                       parse_write_option, validate_change)
+from bmslib.util import get_logger
+
+logger = get_logger()
+
+MAX_PENDING = 20
+
+
+class NullSettingsPublisher:
+    """No-op publisher, used when there is no MQTT publisher."""
+
+    def states(self, settings: dict):
+        pass
+
+    def last_change(self, text: str):
+        pass
+
+
+class _Rejected(Exception):
+    pass
+
+
+def _utc(t: float, fmt: str) -> str:
+    return time.strftime(fmt, time.gmtime(t))
+
+
+class JkSettingsService:
+
+    def __init__(self, alias: str, writable: frozenset, workdir: str = '.', refresh_period: float = 300,
+                 clock=time.time, config_error: Optional[str] = None):
+        self.alias = alias
+        self.writable = frozenset(writable)
+        self.workdir = workdir
+        self.refresh_period = refresh_period
+        self.clock = clock
+        self.locked = False
+        self._config_error = config_error
+        self._lock = threading.Lock()
+        self._pending = collections.deque()  # (name, payload)
+        self._dropped = collections.deque(maxlen=MAX_PENDING)  # (name, payload) rejected: queue full
+        self._last_refresh = None
+        self._backed_up = False
+
+    # called from any thread (paho)
+    def enqueue(self, name: str, payload: str) -> None:
+        with self._lock:
+            if len(self._pending) >= MAX_PENDING:
+                self._dropped.append((name, payload))
+                logger.warning('%s settings queue full, dropping %s=%r', self.alias, name, payload)
+                return
+            self._pending.append((name, payload))
+
+    def _pop(self, queue):
+        with self._lock:
+            return queue.popleft() if queue else None
+
+    async def tick(self, bms, publish) -> None:
+        if not bms.supports_settings():
+            return
+
+        with self._lock:
+            has_pending = bool(self._pending)
+
+        # refresh when never loaded, stale, or before handling requests (validate against fresh values)
+        now = self.clock()
+        if (self._last_refresh is None or bms.settings is None or has_pending
+                or now - self._last_refresh >= self.refresh_period):
+            await bms.refresh_settings()
+            self._last_refresh = now
+            publish.states(bms.settings)
+
+        if self._config_error is not None:
+            publish.last_change('Config error: %s' % self._config_error)
+            self._config_error = None
+
+        while True:
+            item = self._pop(self._dropped)
+            if item is None:
+                break
+            self._reject(publish, bms, item[0], item[1], 'queue full')
+
+        while True:
+            item = self._pop(self._pending)
+            if item is None:
+                break
+            await self._handle(bms, publish, *item)
+
+    async def _handle(self, bms, publish, name, payload):
+        payload = '' if payload is None else str(payload)
+        shown = payload.strip()
+        try:
+            value = self._prepare(bms, name, payload)
+        except _Rejected as e:
+            self._reject(publish, bms, name, shown, str(e))
+            return
+        except SettingError as e:
+            self._reject(publish, bms, name, shown, str(e))
+            return
+        except Exception as e:
+            logger.error('%s settings request %s=%r failed: %s', self.alias, name, payload, e, exc_info=True)
+            self._reject(publish, bms, name, shown, str(e) or type(e).__name__)
+            return
+
+        if value is _UNCHANGED:
+            s = SETTINGS[name]
+            publish.states(bms.settings)
+            publish.last_change('Unchanged %s %s%s' % (name, format_value(name, bms.settings.get(name)),
+                                                      s.unit or ''))
+            return
+
+        before = bms.settings.get(name)
+        try:
+            self._backup_once(bms)
+        except OSError as e:  # never write without a backup
+            logger.error('%s settings backup failed: %s', self.alias, e)
+            self._reject(publish, bms, name, shown, 'backup failed: %s' % e)
+            return
+        try:
+            res = await bms.write_setting(name, value)
+        except Exception as e:
+            reason = 'BLE error: %s' % e
+            logger.error('%s write %s=%s failed: %s', self.alias, name, value, e)
+            self._audit(name, before, value, None, False, reason)
+            self._reject(publish, bms, name, shown, reason)
+            raise
+
+        self._audit(res.name, res.before, res.requested, res.after, res.ok, res.reason)
+        publish.states(bms.settings)
+        unit = SETTINGS[name].unit or ''
+        if res.ok:
+            text = 'OK %s %s -> %s%s' % (name, format_value(name, res.before), format_value(name, res.after), unit)
+            logger.info('%s settings: %s', self.alias, text)
+        else:
+            self.locked = True
+            text = 'FAILED %s %s read back %s; writes locked' % (
+                name, format_value(name, res.requested), format_value(name, res.after))
+            logger.error('%s settings: %s (%s)', self.alias, text, res.reason)
+        publish.last_change(text)
+
+    def _prepare(self, bms, name, payload):
+        """Parse and check a request; returns the value to write, or _UNCHANGED."""
+        s = SETTINGS.get(name)
+        if s is None:
+            raise _Rejected('unknown setting')
+        if name not in self.writable:
+            raise _Rejected('not writable (not in settings_write)')
+
+        text = payload.strip()
+        if s.kind == 'switch':
+            if text.upper() == 'ON':
+                value = True
+            elif text.upper() == 'OFF':
+                value = False
+            else:
+                raise _Rejected('expected ON or OFF')
+        else:
+            try:
+                value = float(text)
+            except ValueError:
+                raise _Rejected('not a number')
+
+        current = bms.settings or {}
+        cur = current.get(name)
+        if cur is not None:
+            if s.kind == 'switch':
+                if bool(cur) == value:
+                    return _UNCHANGED
+            elif math.isfinite(value) and abs(float(cur) - value) <= s.step / 2:
+                return _UNCHANGED
+
+        encode_setting(name, value)  # type, finite, step and range checks
+        validate_change(name, value, current)
+        if self.locked:
+            raise _Rejected('writes locked after a failed read-back; restart batmon')
+        return value
+
+    def _reject(self, publish, bms, name, payload, reason):
+        text = 'Rejected %s %s: %s' % (name, payload, reason)
+        logger.warning('%s settings: %s', self.alias, text)
+        if bms.settings is not None:
+            publish.states(bms.settings)  # snap the HA field back
+        publish.last_change(text)
+
+    def _backup_once(self, bms):
+        if self._backed_up:
+            return
+        t = self.clock()
+        d = os.path.join(self.workdir, 'settings_backup')
+        os.makedirs(d, exist_ok=True)
+        fn = os.path.join(d, '%s-%s.json' % (self.alias, _utc(t, '%Y%m%dT%H%M%SZ')))
+        raw = bms.settings_raw or b''
+        with open(fn, 'w') as f:
+            json.dump(dict(alias=self.alias, time=_utc(t, '%Y-%m-%dT%H:%M:%SZ'), settings=bms.settings,
+                           raw_hex=bytes(raw[:300]).hex()), f, indent=1)
+        logger.info('%s settings backup written to %s', self.alias, fn)
+        self._backed_up = True
+
+    def _audit(self, name, before, requested, after, ok, reason):
+        line = dict(time=_utc(self.clock(), '%Y-%m-%dT%H:%M:%SZ'), alias=self.alias, name=name, before=before,
+                    requested=requested, after=after, ok=ok, reason=reason, source='mqtt')
+        os.makedirs(self.workdir or '.', exist_ok=True)
+        with open(os.path.join(self.workdir, 'settings_audit.jsonl'), 'a') as f:
+            f.write(json.dumps(line) + '\n')
+
+
+_UNCHANGED = object()
+
+
+def build_settings_service(bms, user_config, dev_cfg, workdir='.') -> Optional[JkSettingsService]:
+    """One service per JK BLE device when the global `jk_settings` option is on.
+
+    A bad `settings_write` entry makes the device read-only (and is reported), it never stops batmon.
+    """
+    from bmslib.models.jikong import JKBt
+    if not (user_config or {}).get('jk_settings'):
+        return None
+    if not isinstance(bms, JKBt):
+        return None
+    config_error = None
+    try:
+        writable = parse_write_option((dev_cfg or {}).get('settings_write'))
+    except SettingError as e:
+        logger.error('%s: invalid settings_write %r: %s; settings are read-only for this device',
+                     bms.name, (dev_cfg or {}).get('settings_write'), e)
+        writable, config_error = frozenset(), str(e)
+    return JkSettingsService(bms.name, writable, workdir=workdir, config_error=config_error)

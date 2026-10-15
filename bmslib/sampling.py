@@ -18,6 +18,7 @@ from bmslib.algorithm import create_algorithm
 from bmslib.bms import DeviceInfo, BmsSample, MIN_VALUE_EXPIRY
 from bmslib.cache.mem import mem_cache_deco
 from bmslib.group import BmsGroup, GroupNotReady
+from bmslib.jk_settings_service import NullSettingsPublisher
 from bmslib.mqtt_util import publish_sample, is_none_or_nan, publish_cell_voltages, publish_temperatures, publish_hass_discovery, \
     subscribe_switches, subscribe_set_soc, mqtt_single_out, publish_cell_resistance, publish_qmax, withdraw_qmax, \
     QMAX_CLEAR_REPEAT_S
@@ -165,9 +166,13 @@ class BmsSampler:
                  soh_estimator=False,
                  soh_state=None,
                  design_capacity=None,
+                 settings_service=None,
                  ):
 
         self.bms = bms
+        # JK settings read/write (jk_settings option), drained after each fetch
+        self.settings_service = settings_service
+        self.settings_publisher = None  # set to the MQTT settings publisher; None -> no-op
         self.mqtt_topic_prefix = re.sub(r'[^\w_.-/]', '_', bms.name)
         self.mqtt_client = mqtt_client
         self.invert_current = invert_current
@@ -519,6 +524,9 @@ class BmsSampler:
             t_fetch = time.time()
 
             sample = await bms.fetch()
+
+            if self.settings_service is not None:
+                await self.settings_service.tick(bms, self.settings_publisher or NullSettingsPublisher())
 
             t_now = time.time()
             t_hour = t_now * (1 / 3600)

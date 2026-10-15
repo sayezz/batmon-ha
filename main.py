@@ -481,7 +481,8 @@ async def main():
         except Exception as e:
             logger.warning('GUI state disabled: %s', e)
 
-    from bmslib.store import load_impedance_state, load_qmax_state
+    from bmslib.store import load_impedance_state, load_qmax_state, root_dir as store_root_dir
+    from bmslib.jk_settings_service import build_settings_service
 
     def design_capacity(name):
         """The per-device `capacity:` option [Ah], None when unset or unusable."""
@@ -518,6 +519,7 @@ async def main():
         soh_estimator=bool(user_config.get('soh_estimator', False)),
         soh_state=user_config.get('soh_estimator') and load_qmax_state(bms.name),
         design_capacity=design_capacity(bms.name),
+        settings_service=build_settings_service(bms, user_config, dev_args[bms.name], store_root_dir or '.'),
     ) for bms in bms_list]
 
     # move groups to the end

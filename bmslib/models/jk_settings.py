@@ -316,6 +316,19 @@ def _fmt(v) -> str:
     return repr(v)
 
 
+def format_value(name: str, value) -> str:
+    """User-facing value without float noise: switches ON/OFF, numbers like 2.65 / 3."""
+    if value is None:
+        return '?'
+    s = SETTINGS.get(name)
+    if (s is not None and s.kind == 'switch') or isinstance(value, bool):
+        return 'ON' if value else 'OFF'
+    try:
+        return _fmt(value)
+    except (TypeError, ValueError, OverflowError):
+        return str(value)
+
+
 def validate_change(name: str, value, current: dict) -> None:
     """Check that setting `name` to `value` keeps related settings consistent.
 
