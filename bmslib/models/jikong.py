@@ -19,11 +19,25 @@ fix connection abort:
 import asyncio
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import List, Callable, Dict, Optional, Tuple
 
 from bmslib.bms import BmsSample, DeviceInfo
 from bmslib.bt import BtBms, enumerate_services
+from bmslib.models.jk_settings import SETTINGS, decode_settings, encode_setting
 from bmslib.util import to_hex_str
+
+
+@dataclass
+class WriteResult:
+    """Outcome of JKBt.write_setting: `ok` only if the settings frame read back
+    after the write holds the requested value."""
+    ok: bool
+    name: str
+    before: object
+    requested: object
+    after: object
+    reason: str = ''
 
 
 def calc_crc(message_bytes):
@@ -147,6 +161,8 @@ class JKBt(BtBms):
         self.char_handle_write = None
         self.is_new_11fw_32s = None  # https://github.com/syssi/esphome-jk-bms/blob/main/esp32-ble-example.yaml#L6
         self._has_float_charger = None # used for the `float_charge` switch
+        self.settings: Optional[dict] = None  # decoded 0x01 settings frame, see refresh_settings()
+        self.settings_raw: Optional[bytes] = None
 
     def _notification_handler(self, _sender, data):
         data = bytes(data)
@@ -514,6 +530,47 @@ class JKBt(BtBms):
         await self._write(0x6E, [int(round(soc))])  # 1-byte register, percent
         await asyncio.sleep(.2)
         self._resp_table.pop(0x01, None)  # settings frame is stale now
+
+    def supports_settings(self) -> bool:
+        # the register table in jk_settings is the JK02_32S one (firmware >= 11)
+        return self.is_new_11fw_32s is True
+
+    async def refresh_settings(self) -> dict:
+        """Request a fresh 0x01 settings frame and decode it."""
+        self._resp_table.pop(0x01, None)
+        buf = await self._q(cmd=0x96, resp=0x01)
+        raw = bytes(buf)
+        settings = decode_settings(raw)
+        self.settings_raw = raw
+        self.settings = settings
+        return settings
+
+    async def write_setting(self, name: str, value) -> WriteResult:
+        """Write one setting, then read the settings frame back to verify it.
+
+        No range/consistency validation here (that is the caller's job); encoding
+        errors raise SettingError, BLE errors propagate.
+        """
+        register, data = encode_setting(name, value)
+        if self.settings is None:
+            await self.refresh_settings()
+        before = self.settings.get(name)
+
+        await self._write(register, data)
+        await asyncio.sleep(0.3)  # give the BMS time to apply before reading back
+        after = (await self.refresh_settings()).get(name)
+
+        s = SETTINGS[name]
+        if after is None:
+            ok = False
+        elif s.kind == 'switch':
+            ok = bool(after) == bool(value)
+        else:
+            ok = abs(after - value) <= s.step / 2
+        reason = '' if ok else 'read-back %s != requested %s' % (after, value)
+        if not ok:
+            self.logger.warning('%s write %s=%s not applied: %s', self.name, name, value, reason)
+        return WriteResult(ok=ok, name=name, before=before, requested=value, after=after, reason=reason)
 
     def debug_data(self):
         return dict(resp=self._resp_table, char_w=self.char_handle_write, char_r=self.char_handle_notify)
