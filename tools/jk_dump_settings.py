@@ -42,11 +42,17 @@ def check_settings_frame(frame: bytes) -> None:
 
 
 async def dump(address: str, adapter=None) -> bytes:
-    bms = JKBt(address, name='jk', verbose_log=False, adapter=adapter)
-    async with bms:
+    # keep_alive=False and an explicit teardown: JKBt defaults to keep_alive, which makes
+    # `async with` skip the disconnect, and a JK takes only one BLE link, so a leftover
+    # link (also after a half-done connect) would lock batmon out when it restarts.
+    bms = JKBt(address, name='jk', keep_alive=False, verbose_log=False, adapter=adapter)
+    try:
+        await bms.connect()
         if 0x01 not in bms._resp_table:
             await bms._q(cmd=0x96, resp=0x01)  # same read request the driver uses on connect
         return bytes(bms._resp_table[0x01][0])
+    finally:
+        await bms.force_disconnect()  # bounded; closes the client even if disconnect() raises
 
 
 def main():
