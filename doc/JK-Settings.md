@@ -190,13 +190,21 @@ Writes are **not** locked in this case. batmon reads the settings again on the n
 
 ## Files
 
-Stored in the add-on's data directory (`/data`, part of the add-on's backup) or, outside Home Assistant, in
-batmon's working directory:
+Where they are stored:
+
+* Home Assistant add-on: in the add-on's data directory `/data` (part of the add-on's backup).
+* Standalone (e.g. a systemd service): in batmon's **working directory**, usually the batmon install (git
+  checkout) directory. Both are in `.gitignore`. **Copy them somewhere else before you replace or delete the
+  install directory** (e.g. when reinstalling batmon or restoring a backup copy of it).
+
+The files:
 
 * `settings_backup/<alias>-<UTC time>.json`, e.g. `settings_backup/jk_bms1-20261015T081500Z.json`: all settings
   as read before the first write of a batmon run (`settings`), plus the raw settings frame (`raw_hex`).
+  Characters other than letters, digits, `_`, `.`, `-` and space in the alias become `_` in the file name.
 * `settings_audit.jsonl`: one JSON line per write attempt with `time`, `alias`, `name`, `before`, `requested`,
-  `after`, `ok` and `reason`.
+  `after`, `ok`, `reason` and `source` (`mqtt`). A write interrupted by a Bluetooth error gets a second line once
+  the value has been read again (`reason`: `re-read after BLE error`).
 
 ### Restore
 

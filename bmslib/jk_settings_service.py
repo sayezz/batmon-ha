@@ -12,6 +12,7 @@ import collections
 import json
 import math
 import os
+import re
 import threading
 import time
 from typing import Optional
@@ -258,7 +259,8 @@ class JkSettingsService:
         t = self.clock()
         d = os.path.join(self.workdir, 'settings_backup')
         os.makedirs(d, exist_ok=True)
-        fn = os.path.join(d, '%s-%s.json' % (self.alias, _utc(t, '%Y%m%dT%H%M%SZ')))
+        safe_alias = re.sub(r'[^\w_. -]', '_', self.alias)  # like bmslib/store.py: no '/' in a file name
+        fn = os.path.join(d, '%s-%s.json' % (safe_alias, _utc(t, '%Y%m%dT%H%M%SZ')))
         raw = bms.settings_raw or b''
         with open(fn, 'w') as f:
             json.dump(dict(alias=self.alias, time=_utc(t, '%Y-%m-%dT%H:%M:%SZ'), settings=bms.settings,

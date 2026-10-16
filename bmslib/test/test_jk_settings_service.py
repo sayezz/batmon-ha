@@ -183,6 +183,26 @@ def test_backup_once_and_audit(tmp_path):
     assert (lines[1]['name'], lines[1]['before'], lines[1]['after']) == ('display_always_on', False, True)
 
 
+def test_backup_file_name_sanitized(tmp_path):
+    bms, client = _make()
+    svc = JkSettingsService('a/b', frozenset({'charge_utp'}), workdir=str(tmp_path), clock=lambda: T0)
+    pub = FakePublish()
+    svc.enqueue('charge_utp', '3')
+    _tick(svc, bms, pub)
+    assert pub.texts == ['OK charge_utp 2 -> 3°C']
+    assert os.listdir(tmp_path / 'settings_backup') == ['a_b-20270115T080000Z.json']
+    with open(tmp_path / 'settings_backup' / 'a_b-20270115T080000Z.json') as f:
+        assert json.load(f)['alias'] == 'a/b'
+
+
+def test_settings_files_are_gitignored():
+    # standalone, the files land in batmon's working directory, usually the git checkout
+    with open(os.path.join(os.path.dirname(__file__), '..', '..', '.gitignore')) as f:
+        lines = {l.strip() for l in f}
+    assert '/settings_backup/' in lines
+    assert '/settings_audit.jsonl' in lines
+
+
 def test_mismatch_locks(tmp_path):
     bms, client = _make(ignore_writes=True)
     svc, pub = _service(tmp_path, writable={'charge_utp'}), FakePublish()
