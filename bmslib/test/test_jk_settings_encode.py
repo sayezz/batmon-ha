@@ -188,3 +188,13 @@ def test_labels_cover_all_settings():
     assert LABELS["charge_utp"] == "Charge UTP"
     assert LABELS["cell_ovp"] == "Cell OVP"
     assert LABELS["max_charge_current"] == "Max charge current"
+
+
+def test_current_calibration_range_allows_negative_and_stays_read_only():
+    # the JK app shows e.g. -0.493 A
+    s = SETTINGS['current_calibration']
+    assert (s.min, s.max) == (-1000.0, 1000.0)
+    with pytest.raises(SettingError, match='not writable'):
+        encode_setting('current_calibration', -0.493)
+    with pytest.raises(SettingError):
+        parse_write_option('current_calibration')

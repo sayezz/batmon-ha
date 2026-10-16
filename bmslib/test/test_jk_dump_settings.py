@@ -110,6 +110,13 @@ def test_main_disconnects_when_connect_fails(monkeypatch, tmp_path):
     assert link.disconnects == 1  # a half-open link must not block batmon
 
 
+def test_import_does_not_touch_sys_path():
+    import importlib
+    before = list(sys.path)
+    importlib.reload(jk_dump_settings)
+    assert sys.path == before
+
+
 def test_tool_never_writes_to_bms():
     src = TOOL_SRC.read_text()
     for forbidden in ('_write', 'set_switch', 'set_soc'):

@@ -108,7 +108,7 @@ _TABLE = [
     _num('re_bulk_soc', 0xB7, None, 1, '%', 'low', 0, 50, length=1),
     # calibration values (app: 13.257 V / 13.272 V, -0.493 A) are not in the settings frame
     _num('voltage_calibration', 0x64, None, 1000, 'V', 'critical', 1.0, 200.0),
-    _num('current_calibration', 0x67, None, 1000, 'A', 'critical', 0.0, 1000.0),
+    _num('current_calibration', 0x67, None, 1000, 'A', 'critical', -1000.0, 1000.0),
 
     _sw('heating', 0x27, (282, 0x01), 'med'),
     _sw('disable_temperature_sensors', 0x28, (282, 0x02), 'critical'),
@@ -273,7 +273,7 @@ def encode_setting(name: str, value: Union[float, bool]) -> Tuple[int, List[int]
 
 
 def parse_write_option(text: Optional[str]) -> FrozenSet[str]:
-    """Parse the `jk_settings_write` option: comma-separated names and/or `all`.
+    """Parse the per-device `settings_write` option: comma-separated names and/or `all`.
 
     `all` means every writable setting except CRITICAL ones; critical settings must be
     named explicitly. Unknown or non-writable names raise SettingError.

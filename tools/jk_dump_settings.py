@@ -21,8 +21,9 @@ import os
 import pathlib
 import sys
 
-# allow running as a script (from the batmon dir or a copy in /tmp)
-sys.path[:0] = [os.getcwd(), str(pathlib.Path(__file__).resolve().parents[1])]
+if __name__ == '__main__':
+    # allow running as a script (from the batmon dir or a copy in /tmp); not on import
+    sys.path[:0] = [os.getcwd(), str(pathlib.Path(__file__).resolve().parents[1])]
 
 from bmslib.models.jikong import JKBt, calc_crc  # noqa: E402
 

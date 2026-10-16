@@ -129,7 +129,7 @@ class JkSettingsService:
 
     async def _handle(self, bms, publish, name, payload):
         payload = '' if payload is None else str(payload)
-        shown = payload.strip()
+        shown = payload.strip() or "''"  # an empty payload, visibly
         try:
             value = self._prepare(bms, name, payload)
         except _Rejected as e:

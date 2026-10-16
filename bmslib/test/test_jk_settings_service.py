@@ -104,9 +104,17 @@ def test_garbage_payload_rejected(tmp_path):
         svc.enqueue(name, payload)
         _tick(svc, bms, pub)
         assert client.writes == [], payload
-        assert pub.texts[-1].startswith('Rejected %s %s:' % (name, payload.strip())), pub.texts
+        assert pub.texts[-1].startswith('Rejected %s %s:' % (name, payload.strip() or "''")), pub.texts
         assert pub.calls[-2][0] == 'states'
         assert pub.calls[-2][1]['cell_uvp'] == 2.65
+
+
+def test_empty_payload_shown_quoted(tmp_path):
+    bms, client = _make()
+    svc, pub = _service(tmp_path, writable={'cell_uvp'}), FakePublish()
+    svc.enqueue('cell_uvp', '  ')
+    _tick(svc, bms, pub)
+    assert pub.texts == ["Rejected cell_uvp '': not a number"]
 
 
 def test_same_value_unchanged(tmp_path):
