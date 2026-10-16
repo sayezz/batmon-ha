@@ -56,11 +56,23 @@ All entities belong to the BMS device in Home Assistant.
   * `Config error: <reason>` (bad `settings_write`)
 * On a JK-PB with a built-in float charger, `charging_float_mode` gets no entity of its own: it is already the
   `float_charge` switch.
+* When you add a setting to `settings_write` or remove it, its entity changes from `sensor`/`binary_sensor` to
+  `number`/`switch` or back. batmon then removes the old entity in Home Assistant (an empty discovery config),
+  so there is no stale duplicate. This works while Home Assistant still knows the old entity from this run;
+  an old entity left over from before a Home Assistant restart can be deleted by hand.
+* The entities are announced to Home Assistant (MQTT discovery) before their first values are sent, and the
+  values are sent again ~2 s later, so they show up right after batmon starts.
 
-Settings are read when batmon starts, after every reconnect to the BMS, every 5 minutes, before each change and
-right after it. If reading fails,
+Settings are read when batmon starts, every 5 minutes, before each change and right after it. With
+`keep_alive: true` also after every reconnect to the BMS. Without `keep_alive` batmon connects anew for every
+sample, so a reconnect does not trigger a read there (that would be a settings query every sample); the 5-minute
+read applies. If reading fails,
 the next try is 60 seconds later; requests made meanwhile wait in a queue (at most 20 per BMS, more are rejected
 with `queue full`).
+
+One write takes ~2-3 s and happens inside the sampling of that BMS, so at most 3 writes are done per sample;
+further requests stay queued in order for the next sample (which reads the settings again first). Rejected and
+unchanged requests are instant and do not count.
 
 Retained MQTT messages on the settings command topics are ignored (with one warning per topic): a retained
 command would be applied again after every reconnect.
@@ -190,8 +202,10 @@ batmon (restart the add-on) to unlock.
 If the connection fails during the write or the read-back, batmon cannot tell whether the BMS took the value
 (`UNKNOWN …: BLE error: …; value will be re-read`; unlike `Rejected`, which always means nothing was written).
 Writes are **not** locked in this case. batmon reads the settings again on the next sample (after a failed read
-60 seconds later, and always after a reconnect) and reports `CONFIRMED …` or `NOT APPLIED … (is …)`, also in
-`settings_audit.jsonl`. Check the result before trying again.
+60 seconds later) and reports `CONFIRMED …` or `NOT APPLIED … (is …)`, also in
+`settings_audit.jsonl`. Like after a normal write, all settings are compared: if any other setting changed since
+the write, batmon adds `; also changed: …; writes locked` and locks writes (see above). Check the result before
+trying again.
 
 ## Files
 
