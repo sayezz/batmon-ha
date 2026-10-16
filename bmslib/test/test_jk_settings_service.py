@@ -31,9 +31,11 @@ def _make(ignore_writes=False):
 class FakePublish:
     def __init__(self):
         self.calls = []
+        self.forced = []  # `force` of every states() call
 
-    def states(self, settings):
+    def states(self, settings, force=False):
         self.calls.append(('states', dict(settings)))
+        self.forced.append(force)
 
     def last_change(self, text):
         self.calls.append(('last_change', text))
@@ -90,6 +92,7 @@ def test_not_whitelisted_rejected(tmp_path):
     assert pub.texts[-1].startswith('Rejected cell_uvp 2.7: ')
     assert 'not writable' in pub.texts[-1]
     assert pub.calls[-2][0] == 'states'  # field snapped back
+    assert pub.forced[-1] is True  # past mqtt_single_out's dedup
 
 
 def test_garbage_payload_rejected(tmp_path):
@@ -124,6 +127,7 @@ def test_ordered_dependent_changes(tmp_path):
     svc.enqueue('charge_utp', '6')
     _tick(svc, bms, pub)
     assert pub.texts == ['OK charge_utpr 5 -> 7°C', 'OK charge_utp 2 -> 6°C']
+    assert not any(pub.forced)  # changed values need no force
     assert bms.settings['charge_utpr'] == 7.0
     assert bms.settings['charge_utp'] == 6.0
     assert [reg for reg, _ in client.writes] == [0x19, 0x18]
@@ -185,6 +189,7 @@ def test_mismatch_locks(tmp_path):
     svc.enqueue('charge_utp', '3')
     _tick(svc, bms, pub)
     assert pub.texts[-1] == 'FAILED charge_utp 3 read back 2; writes locked'
+    assert pub.forced[-1] is True
     svc.enqueue('charge_utp', '4')
     _tick(svc, bms, pub)
     assert pub.texts[-1] == 'Rejected charge_utp 4: writes locked after a failed read-back; restart batmon'
@@ -254,6 +259,7 @@ def test_ble_error_propagates_and_keeps_queue(tmp_path):
         pass
     # the write may have reached the BMS: not "Rejected"
     assert pub.texts[-1] == 'UNKNOWN charge_utp 3: BLE error: link lost; value will be re-read'
+    assert pub.calls[-2][0] == 'states' and pub.forced[-1] is True
     lines = _audit_lines(tmp_path)
     assert lines[-1]['ok'] is False and lines[-1]['name'] == 'charge_utp'
     assert lines[-1]['reason'] == 'BLE error: link lost'
@@ -420,6 +426,7 @@ def test_no_settings_support_noop(tmp_path):
 def test_null_publisher():
     p = NullSettingsPublisher()
     p.states({'a': 1})
+    p.states({'a': 1}, force=True)
     p.last_change('x')
 
 

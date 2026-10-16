@@ -62,6 +62,9 @@ right after it. If reading fails,
 the next try is 60 seconds later; requests made meanwhile wait in a queue (at most 20 per BMS, more are rejected
 with `queue full`).
 
+Retained MQTT messages on the settings command topics are ignored (with one warning per topic): a retained
+command would be applied again after every reconnect.
+
 Config entities (number/switch) have no expiry in Home Assistant: while batmon or the BMS is offline they keep
 showing the last value. Check that the device is online before trusting them.
 

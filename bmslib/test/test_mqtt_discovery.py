@@ -211,6 +211,37 @@ def test_settings_states_exclude_and_force():
     assert len(c.log) == n + 1
 
 
+def _jk_with_fixture(ignore_writes=False):
+    import os
+    from bmslib.models.dummy import JKDummy
+    from bmslib.models.jikong import JKBt
+    with open(os.path.join(os.path.dirname(__file__), 'data', 'jk_settings_b2a8s30p_fw15.26.bin'), 'rb') as f:
+        frame = f.read()
+    bms = JKBt("00:11:22:33:44:55", name="jk1")
+    client = JKDummy(is_new_11x=True, settings_frame=frame, ignore_writes=ignore_writes, stream=False)
+    bms.client = client
+    bms.char_handle_write = JKBt.CHAR_UUID
+    bms.is_new_11fw_32s = bms.settings_protocol_confirmed = True
+    asyncio.run(client.start_notify(JKBt.CHAR_UUID, bms._notification_handler))
+    return bms
+
+
+@pytest.mark.parametrize('payload, ignore_writes', [('9', False), ('6', False), ('3', True)])
+def test_snap_back_reaches_the_broker(tmp_path, payload, ignore_writes):
+    """After a rejected (out of range / cross-field) or failed write HA must get the real value
+    again, even though it is the same value published seconds ago (mqtt_single_out deduplicates)."""
+    bms = _jk_with_fixture(ignore_writes)
+    c = _Recorder()
+    pub = MqttSettingsPublisher(c, DEV)
+    svc = JkSettingsService('jk1', frozenset({'charge_utp'}), workdir=str(tmp_path))
+    asyncio.run(svc.tick(bms, pub))
+    topic = f"{DEV}/settings/charge_utp"
+    assert [p for t, p, _ in c.log if t == topic] == ['2']
+    svc.enqueue('charge_utp', payload)
+    asyncio.run(svc.tick(bms, pub))
+    assert [p for t, p, _ in c.log if t == topic] == ['2', '2']
+
+
 def test_last_change_always_publishes():
     c = _Recorder()
     pub = MqttSettingsPublisher(c, DEV)

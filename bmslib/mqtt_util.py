@@ -556,6 +556,7 @@ _state_callbacks = {}
 # settings: JkSettingsService.enqueue is thread-safe and does not block). Like
 # _switch_callbacks they are re-subscribed by resubscribe_commands().
 _command_callbacks = {}
+_retained_warned = set()  # command topics we already warned about a retained message on
 
 
 def register_state_topic(topic: str, callback):
@@ -655,6 +656,14 @@ def mqtt_message_handler(client, userdata, message: paho.MQTTMessage):
     logger.info("received msg %s: %s", message.topic, payload)
     command_cb = _command_callbacks.get(message.topic)
     if command_cb is not None:
+        if getattr(message, 'retain', False):
+            # a retained command is delivered again on every (re)subscribe and would undo
+            # whatever was changed since (e.g. in the JK app): settings writes must be live
+            if message.topic not in _retained_warned:
+                _retained_warned.add(message.topic)
+                logger.warning('ignoring retained settings command on %s (payload %s); publish settings '
+                               'commands without retain and clear the retained message', message.topic, payload)
+            return
         try:
             command_cb(payload)
         except Exception as e:

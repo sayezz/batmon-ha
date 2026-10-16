@@ -11,6 +11,7 @@ def _fresh(monkeypatch):
     import queue
     monkeypatch.setattr(mqtt_util, '_switch_callbacks', {})
     monkeypatch.setattr(mqtt_util, '_command_callbacks', {})
+    monkeypatch.setattr(mqtt_util, '_retained_warned', set())
     monkeypatch.setattr(mqtt_util, '_state_callbacks', {})
     monkeypatch.setattr(mqtt_util, '_message_queue', queue.Queue())
 
@@ -24,9 +25,10 @@ class _Client:
 
 
 class _Msg:
-    def __init__(self, topic, payload):
+    def __init__(self, topic, payload, retain=False):
         self.topic = topic
         self.payload = payload.encode()
+        self.retain = retain
 
 
 class _Service:
@@ -51,6 +53,22 @@ def test_settings_command_reaches_enqueue_directly():
     mqtt_message_handler(c, None, _Msg('homeassistant/switch/dev_jk/display_always_on/set', 'ON'))
     assert svc.enqueued == [('charge_utp', '3'), ('display_always_on', 'ON')]
     assert mqtt_util._message_queue.empty()  # not routed through the async action queue
+
+
+def test_retained_settings_command_is_ignored(caplog):
+    """A retained command (e.g. published with retain by hand or by a script) comes back on every
+    (re)subscribe; applying it again would undo later changes made in the JK app."""
+    c, svc = _Client(), _Service({'charge_utp'})
+    subscribe_jk_settings(c, 'dev', svc)
+    topic = 'homeassistant/number/dev/charge_utp/set'
+    for _ in range(3):
+        mqtt_message_handler(c, None, _Msg(topic, '3', retain=True))
+    assert svc.enqueued == []
+    warnings = [r for r in caplog.records if r.levelname == 'WARNING' and topic in r.getMessage()]
+    assert len(warnings) == 1  # once per topic
+    assert 'retain' in warnings[0].getMessage()
+    mqtt_message_handler(c, None, _Msg(topic, '4'))
+    assert svc.enqueued == [('charge_utp', '4')]
 
 
 def test_only_writable_readable_settings_are_subscribed():

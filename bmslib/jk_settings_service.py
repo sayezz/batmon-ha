@@ -28,7 +28,7 @@ MAX_PENDING = 20
 class NullSettingsPublisher:
     """No-op publisher, used when there is no MQTT publisher."""
 
-    def states(self, settings: dict):
+    def states(self, settings: dict, force: bool = False):
         pass
 
     def last_change(self, text: str):
@@ -141,7 +141,7 @@ class JkSettingsService:
 
         if value is _UNCHANGED:
             s = SETTINGS[name]
-            publish.states(bms.settings)
+            publish.states(bms.settings, force=True)  # e.g. 2.6504 typed: show 2.65 again
             publish.last_change('Unchanged %s %s%s' % (name, format_value(name, bms.settings.get(name)),
                                                       s.unit or ''))
             return
@@ -163,14 +163,15 @@ class JkSettingsService:
             self._last_refresh = None  # re-read on the next tick (the refresh backoff still applies)
             self._audit(name, before, value, None, False, reason)
             if bms.settings is not None:
-                publish.states(bms.settings)  # snap the HA field back until the re-read
+                publish.states(bms.settings, force=True)  # snap the HA field back until the re-read
             publish.last_change('UNKNOWN %s %s: %s; value will be re-read' % (name, shown, reason))
             raise
 
         if not res.ok:
             self.locked = True  # before any file I/O
         self._audit(res.name, res.before, res.requested, res.after, res.ok, res.reason)
-        publish.states(bms.settings)
+        # after a failed write the value is likely the one HA already has: force it past the dedup
+        publish.states(bms.settings, force=not res.ok)
         unit = SETTINGS[name].unit or ''
         if res.ok:
             text = 'OK %s %s -> %s%s' % (name, format_value(name, res.before), format_value(name, res.after), unit)
@@ -247,7 +248,8 @@ class JkSettingsService:
         text = 'Rejected %s %s: %s' % (name, payload, reason)
         logger.warning('%s settings: %s', self.alias, text)
         if bms.settings is not None:
-            publish.states(bms.settings)  # snap the HA field back
+            # snap the HA field back; forced, the value is the same as the one published last
+            publish.states(bms.settings, force=True)
         publish.last_change(text)
 
     def _backup_once(self, bms):
