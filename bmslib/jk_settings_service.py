@@ -86,9 +86,13 @@ class JkSettingsService:
 
         connect_count = getattr(bms, 'connect_count', None)
         if connect_count != self._seen_connect:
-            # a new BLE link: settings may have changed meanwhile (e.g. in the JK app), re-read them
             self._seen_connect = connect_count
-            self._last_refresh = None
+            if getattr(bms, 'keep_alive', False):
+                # a new BLE link after a held one dropped (or the periodic reconnect): settings may
+                # have changed meanwhile (e.g. in the JK app), re-read them. Without keep_alive
+                # every sample connects anew; refresh_period applies then, else every sample
+                # would send a 0x96 settings query.
+                self._last_refresh = None
 
         with self._lock:
             # this tick handles only what is queued now, validated against the refresh below;

@@ -386,6 +386,7 @@ def test_reread_after_ble_error_respects_the_backoff(tmp_path):
 
 def test_reread_after_reconnect(tmp_path):
     bms, client = _make()
+    assert bms.keep_alive is True  # JKBt default
     now = [T0]
     svc, pub = _service(tmp_path, clock=lambda: now[0], refresh_period=300), FakePublish()
     _tick(svc, bms, pub)
@@ -399,6 +400,41 @@ def test_reread_after_reconnect(tmp_path):
     now[0] += 10
     _tick(svc, bms, pub)
     assert len(pub.states_calls) == 2  # once per reconnect
+
+
+def test_no_reread_per_sample_without_keep_alive(tmp_path):
+    """Without keep_alive every sample connects anew: connect_count changes every tick and must
+    not force a 0x96 settings query each sample; refresh_period applies."""
+    bms, client = _make()
+    bms.keep_alive = False
+    now = [T0]
+    svc, pub = _service(tmp_path, clock=lambda: now[0], refresh_period=300), FakePublish()
+    for _ in range(29):  # 290 s of 10 s samples, each one a new link
+        bms.connect_count += 1
+        _tick(svc, bms, pub)
+        now[0] += 10
+    assert len(pub.states_calls) == 1
+    bms.connect_count += 1
+    _tick(svc, bms, pub)  # 290 s: still inside the period
+    assert len(pub.states_calls) == 1
+    now[0] += 10
+    bms.connect_count += 1
+    _tick(svc, bms, pub)  # 300 s: refresh_period
+    assert len(pub.states_calls) == 2
+
+
+def test_requests_still_reread_without_keep_alive(tmp_path):
+    bms, client = _make()
+    bms.keep_alive = False
+    now = [T0]
+    svc, pub = _service(tmp_path, writable={'charge_utp'}, clock=lambda: now[0]), FakePublish()
+    _tick(svc, bms, pub)
+    now[0] += 10
+    bms.connect_count += 1
+    svc.enqueue('charge_utp', '3')
+    _tick(svc, bms, pub)
+    assert len(pub.states_calls) >= 2  # forced refresh before the request
+    assert pub.texts == ['OK charge_utp 2 -> 3°C']
 
 
 def test_refresh_failure_backs_off(tmp_path):
