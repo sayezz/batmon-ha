@@ -233,6 +233,28 @@ def test_other_setting_changed_locks(tmp_path):
     assert line['ok'] is False and 'charge_utpr 5 -> 3°C' in line['reason']
 
 
+def test_tick_drains_only_what_was_queued_at_its_start(tmp_path):
+    """Requests arriving while a tick works through the queue wait for the next tick, which
+    re-reads the settings first (a steady stream must not keep one tick going on stale values)."""
+    bms, client = _make()
+    svc = _service(tmp_path, writable={'charge_utpr'})
+
+    class LateArrival(FakePublish):
+        def last_change(self, text):
+            super().last_change(text)
+            if len(self.texts) == 1:
+                svc.enqueue('charge_utpr', '7')  # e.g. from the paho thread, mid-tick
+
+    pub = LateArrival()
+    svc.enqueue('charge_utpr', '6')
+    _tick(svc, bms, pub)
+    assert pub.texts == ['OK charge_utpr 5 -> 6°C']
+    refreshes = len(pub.states_calls)
+    _tick(svc, bms, pub)
+    assert pub.texts == ['OK charge_utpr 5 -> 6°C', 'OK charge_utpr 6 -> 7°C']
+    assert len(pub.states_calls) > refreshes
+
+
 def test_queue_limit(tmp_path):
     bms, _ = _make()
     svc, pub = _service(tmp_path), FakePublish()

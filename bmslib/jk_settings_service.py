@@ -91,7 +91,10 @@ class JkSettingsService:
             self._last_refresh = None
 
         with self._lock:
-            has_pending = bool(self._pending)
+            # this tick handles only what is queued now, validated against the refresh below;
+            # later requests wait for the next tick (which refreshes first because of them)
+            n_pending = len(self._pending)
+        has_pending = n_pending > 0
 
         # refresh when never loaded, stale, or before handling requests (validate against fresh values)
         now = self.clock()
@@ -118,7 +121,7 @@ class JkSettingsService:
                 break
             self._reject(publish, bms, item[0], item[1], 'queue full')
 
-        while True:
+        for _ in range(n_pending):  # FIFO: the first n_pending items are this tick's snapshot
             item = self._pop(self._pending)
             if item is None:
                 break
