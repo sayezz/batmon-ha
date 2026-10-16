@@ -59,9 +59,9 @@ configuration:
     name: JK-Einstellungen änderbar
     description: >-
       JK-BMS-Einstellungen, die aus Home Assistant geändert werden dürfen
-      (braucht "JK-Einstellungen"). "all" heißt alle änderbaren außer den
-      kritischen, die einzeln genannt werden müssen; oder eine
-      kommagetrennte Liste von Namen. Ein ungültiger Name lässt das Gerät
+      (braucht "JK-Einstellungen"): "all" und/oder eine kommagetrennte Liste
+      von Namen. "all" heißt alle änderbaren außer den kritischen, die
+      einzeln genannt werden müssen. Ein ungültiger Name lässt das Gerät
       nur lesbar. Siehe doc/JK-Settings.md.
 
   concurrent_sampling:

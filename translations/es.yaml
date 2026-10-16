@@ -60,9 +60,9 @@ configuration:
     name: Ajustes JK modificables
     description: >-
       Ajustes del BMS JK que se pueden cambiar desde Home Assistant (necesita
-      "Ajustes JK"). "all" significa todos los modificables salvo los
-      críticos, que hay que nombrar; o una lista de nombres separados por
-      comas. Un nombre no válido deja el dispositivo en solo lectura. Ver
+      "Ajustes JK"): "all" y/o una lista de nombres separados por comas.
+      "all" significa todos los modificables salvo los críticos, que hay que
+      nombrar. Un nombre no válido deja el dispositivo en solo lectura. Ver
       doc/JK-Settings.md.
 
   concurrent_sampling:
@@ -224,7 +224,7 @@ configuration:
     description: >-
       Lee los ajustes de los BMS JK (Bluetooth, firmware 11 o posterior) y
       los muestra en Home Assistant. Solo lectura, salvo que un dispositivo
-      defina "Ajustes JK modificables". Cierre la app JK al cambiar ajustes.
+      defina "Ajustes JK modificables". Cierra la app JK al cambiar ajustes.
       Ver doc/JK-Settings.md.
   pack_temp_estimator:
     name: Estimar la temperatura de la batería (experimental)

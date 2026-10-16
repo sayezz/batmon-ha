@@ -118,7 +118,7 @@ so a write could not be verified; not shown and not writable. Risk is a rough gu
 | `emergency_duration` | Emergency duration | 1 … 255 min, step 1 | med | no (not readable) |
 | `re_bulk_soc` | Re-bulk SOC | 0 … 50 %, step 1 | low | no (not readable) |
 | `voltage_calibration` | Voltage calibration | 1 … 200 V, step 0.001 | critical | no (not readable) |
-| `current_calibration` | Current calibration | 0 … 1000 A, step 0.001 | critical | no (not readable) |
+| `current_calibration` | Current calibration | -1000 … 1000 A, step 0.001 | critical | no (not readable) |
 | `heating` | Heating | ON/OFF | med | `all` |
 | `disable_temperature_sensors` | Disable temperature sensors | ON/OFF | critical | by name |
 | `display_always_on` | Display always on | ON/OFF | low | `all` |
@@ -138,7 +138,9 @@ switches and `set_soc` number), SOH calibration and the emergency switch (not re
 
 ## What happens on a change
 
-Each request goes through these steps; the first one that fails ends it, and nothing is written:
+Each request goes through these steps. Steps 1 to 6 are checks before anything is sent to the BMS: the first
+check that fails ends the request and nothing is written (`Rejected …`). Steps 7 and 8 are the write itself;
+how a failed write or read-back is handled is described below (read-back mismatch, Bluetooth error).
 
 1. **Whitelist**: the setting must be in the device's `settings_write`.
 2. **Unchanged?** Switches take `ON`/`OFF`, numbers a number. If the BMS already has the value, nothing is
@@ -155,7 +157,8 @@ Each request goes through these steps; the first one that fails ends it, and not
 5. **Lock**: no write while this BMS is locked (see below).
 6. **Backup** of all settings, once per batmon run, before the first write. If the backup cannot be written,
    nothing is written.
-7. **Write** the one setting, wait, **read** the settings back and **compare**. There are no retries.
+7. **Write** the one setting, wait, **read** all settings back and **compare**: the setting must have the new
+   value and no other setting may have changed. There are no retries.
 8. **Audit**: every write attempt is logged to `settings_audit.jsonl`.
 
 ### Protection and recovery values: which one first
