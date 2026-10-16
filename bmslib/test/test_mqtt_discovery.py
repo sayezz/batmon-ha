@@ -413,3 +413,58 @@ def test_slow_settings_tick_does_not_expire_the_fetched_sample(_no_sleep, monkey
                    publish_period=3600, settings_service=_SlowService())
     res = asyncio.run(s())
     assert res is not None and s.num_samples == 1
+
+
+def _first(log, pred):
+    return next(i for i, (t, _, _) in enumerate(log) if pred(t))
+
+
+def _settings_config(t, node):
+    return t.startswith('homeassistant/') and f'/{node}/setting' in t and t.endswith('/config')
+
+
+def test_publisher_sends_discovery_before_the_first_states():
+    c = _Recorder()
+    pub = MqttSettingsPublisher(c, DEV, writable=frozenset({'charge_utp'}), expire_after_seconds=30)
+    pub.states({'cell_ovp': 3.65, 'charge_utp': 2.0})
+    first_state = _first(c.log, lambda t: t.startswith(f"{DEV}/settings/"))
+    configs = [i for i, (t, _, _) in enumerate(c.log) if _settings_config(t, NODE)]
+    assert configs and max(configs) < first_state
+    assert c.config(f"homeassistant/number/{NODE}/setting_charge_utp/config")['command_topic']
+    n = len(c.log)
+    pub.states({'cell_ovp': 3.65, 'charge_utp': 2.0})  # discovery once, unchanged states deduplicated
+    assert len(c.log) == n
+
+
+def test_publisher_rediscovers_when_the_entities_change():
+    c = _Recorder()
+    pub = MqttSettingsPublisher(c, DEV, exclude={'charging_float_mode'}, writable=frozenset({'charging_float_mode'}),
+                                expire_after_seconds=30)
+    pub.states({'cell_ovp': 3.65, 'charging_float_mode': True})
+    assert f"homeassistant/switch/{NODE}/setting_charging_float_mode/config" not in c.published
+    n = len(c.log)
+    pub.exclude = frozenset()  # e.g. float charger known now: one more entity
+    pub.states({'cell_ovp': 3.65, 'charging_float_mode': True})
+    new = [t for t, _, _ in c.log[n:]]
+    assert new.index(f"homeassistant/switch/{NODE}/setting_charging_float_mode/config") < \
+        new.index(f"{DEV}/settings/charging_float_mode")
+    assert f"{DEV}/settings/cell_ovp" in new  # forced after the new discovery
+
+
+def test_publisher_without_writable_sends_no_discovery():
+    c = _Recorder()
+    MqttSettingsPublisher(c, DEV).states({'cell_ovp': 3.65})
+    assert [t for t, _, _ in c.log] == [f"{DEV}/settings/cell_ovp"]
+
+
+def test_sampler_first_settings_states_after_discovery(_no_sleep):
+    """After a restart the settings entities must not stay 'unavailable' until the next refresh:
+    their HA configs go out before the first states."""
+    c = _run_sampler(False)
+    first_state = _first(c.log, lambda t: t.startswith('jk_fake/settings/') and not t.endswith('last_change'))
+    configs = [i for i, (t, _, _) in enumerate(c.log) if _settings_config(t, 'jk_fake')]
+    assert configs and min(configs) < first_state
+    live = {c.log[i][0] for i in configs if c.log[i][1]}
+    live_before = {c.log[i][0] for i in configs if c.log[i][1] and i < first_state}
+    assert live_before == live  # every entity's config before the first state
+    assert len(live) == len([s for s in SETTINGS.values() if s.read is not None]) + 1  # + settings_last_change

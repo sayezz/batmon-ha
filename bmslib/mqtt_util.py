@@ -526,16 +526,43 @@ def publish_jk_settings_discovery(client, device_topic, device_json, writable, e
 
 
 class MqttSettingsPublisher:
-    """The JkSettingsService publish protocol (states, last_change) on MQTT."""
+    """The JkSettingsService publish protocol (states, last_change) on MQTT.
 
-    def __init__(self, client, device_topic, exclude=()):
+    With `writable` set, it also owns the settings HA discovery: sent before the first states and
+    again whenever the entity set (`exclude`, `writable`) changed, so HA never gets states for
+    entities it does not know yet (they would show "unavailable" until the next refresh).
+    `device_json`: callable returning the HA device block (default: from the device topic)."""
+
+    def __init__(self, client, device_topic, exclude=(), writable=None, expire_after_seconds=0, device_json=None):
         self.client = client
         self.device_topic = device_topic
         self.exclude = frozenset(exclude)
+        self.writable = None if writable is None else frozenset(writable)
+        self.expire_after_seconds = expire_after_seconds
+        self.device_json = device_json
+        self._discovered = None  # (exclude, writable) of the last discovery
+        self._force_states = False  # next states() goes past the dedup (after a discovery)
+
+    def discovery(self):
+        """Publish the settings discovery now; the next states() is forced."""
+        if self.writable is None:
+            return
+        dj = self.device_json() if self.device_json else hass_device_json(self.device_topic)
+        publish_jk_settings_discovery(self.client, self.device_topic, dj, self.writable,
+                                      self.expire_after_seconds, exclude=self.exclude)
+        self._discovered = (frozenset(self.exclude), self.writable)
+        self._force_states = True
+
+    def _ensure_discovery(self):
+        if self.writable is not None and self._discovered != (frozenset(self.exclude), self.writable):
+            self.discovery()
 
     def states(self, settings: dict, force=False):
         """Numbers plain (2.65), switches ON/OFF, not retained. Unchanged values are
-        deduplicated like other states unless `force` (right after discovery)."""
+        deduplicated like other states unless `force` or right after a discovery."""
+        self._ensure_discovery()
+        if self._force_states:
+            force, self._force_states = True, False
         for name, value in (settings or {}).items():
             if name in self.exclude or value is None:
                 continue
@@ -546,6 +573,7 @@ class MqttSettingsPublisher:
 
     def last_change(self, text: str):
         # always published: the same text twice (e.g. a repeated rejection) is two events
+        self._ensure_discovery()  # the last-change sensor is part of the settings discovery
         topic = f"{self.device_topic}/settings/last_change"
         text = str(text)
         if len(text) > _HA_STATE_MAX_LEN:

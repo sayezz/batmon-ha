@@ -21,7 +21,7 @@ from bmslib.group import BmsGroup, GroupNotReady
 from bmslib.jk_settings_service import NullSettingsPublisher
 from bmslib.mqtt_util import publish_sample, is_none_or_nan, publish_cell_voltages, publish_temperatures, publish_hass_discovery, \
     subscribe_switches, subscribe_set_soc, mqtt_single_out, publish_cell_resistance, publish_qmax, withdraw_qmax, \
-    QMAX_CLEAR_REPEAT_S, MqttSettingsPublisher, hass_device_json, publish_jk_settings_discovery, subscribe_jk_settings
+    QMAX_CLEAR_REPEAT_S, MqttSettingsPublisher, hass_device_json, subscribe_jk_settings
 from bmslib.pwmath import Integrator, DiffAbsSum, LHQ
 from bmslib.util import get_logger, summarize_exc
 
@@ -176,12 +176,17 @@ class BmsSampler:
         self._settings_exclude = None  # settings without own entity, decided on the first tick
         self._settings_subscribed = False
         self.mqtt_topic_prefix = re.sub(r'[^\w_.-/]', '_', bms.name)
-        if mqtt_client is not None and settings_service is not None:
-            self.settings_publisher = MqttSettingsPublisher(mqtt_client, self.mqtt_topic_prefix)
         self.mqtt_client = mqtt_client
         self.invert_current = invert_current
         self.expire_after_seconds = expire_after_seconds
         self.device_info: Optional[DeviceInfo] = None
+        if mqtt_client is not None and settings_service is not None:
+            # it sends the settings discovery itself before the first states (and when the entity
+            # set changes); the periodic discovery below repeats it
+            self.settings_publisher = MqttSettingsPublisher(
+                mqtt_client, self.mqtt_topic_prefix, exclude=self._settings_excluded,
+                writable=settings_service.writable, expire_after_seconds=expire_after_seconds,
+                device_json=lambda: hass_device_json(self.mqtt_topic_prefix, self.device_info))
         self.num_samples = 0
         self.bms_group = bms_group  # group, virtual, parent
         self.current_calibration_factor = current_calibration_factor
@@ -774,11 +779,8 @@ class BmsSampler:
                 settings = getattr(bms, 'settings', None)
                 settings_discovered = self.settings_publisher is not None and settings is not None
                 if settings_discovered:
-                    publish_jk_settings_discovery(
-                        mqtt_client, self.mqtt_topic_prefix,
-                        hass_device_json(self.mqtt_topic_prefix, self.device_info),
-                        self.settings_service.writable, self.expire_after_seconds,
-                        exclude=self._settings_excluded)
+                    self.settings_publisher.exclude = self._settings_excluded
+                    self.settings_publisher.discovery()
 
                 # publish sample again after discovery
                 if self.period_pub.period > 2:
