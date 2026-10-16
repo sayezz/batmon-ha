@@ -468,3 +468,36 @@ def test_sampler_first_settings_states_after_discovery(_no_sleep):
     live_before = {c.log[i][0] for i in configs if c.log[i][1] and i < first_state}
     assert live_before == live  # every entity's config before the first state
     assert len(live) == len([s for s in SETTINGS.values() if s.read is not None]) + 1  # + settings_last_change
+
+
+def test_states_sent_again_shortly_after_a_discovery(monkeypatch):
+    """States right behind the configs can reach the broker before HA subscribed to the new
+    entities' state topics (not retained: lost); they go out once more a moment later."""
+    clock = [1000.0]
+    monkeypatch.setattr(mqtt_util.time, 'time', lambda: clock[0])
+    c = _Recorder()
+    pub = MqttSettingsPublisher(c, DEV, writable=frozenset(), expire_after_seconds=30)
+    settings = {'cell_ovp': 3.65}
+    pub.states(settings)
+    topic = f"{DEV}/settings/cell_ovp"
+    assert [t for t, _, _ in c.log].count(topic) == 1
+    pub.resend_after_discovery(settings)  # too early
+    assert [t for t, _, _ in c.log].count(topic) == 1
+    clock[0] += mqtt_util.SETTINGS_RESEND_AFTER_DISCOVERY_S
+    pub.resend_after_discovery(settings)
+    assert [t for t, _, _ in c.log].count(topic) == 2
+    clock[0] += 60
+    pub.resend_after_discovery(settings)  # once per discovery
+    assert [t for t, _, _ in c.log].count(topic) == 2
+
+
+def test_sampler_resends_settings_states_after_discovery(_no_sleep, monkeypatch):
+    clock = [time.time()]
+    monkeypatch.setattr(mqtt_util.time, 'time', lambda: clock[0])
+    c = _Recorder()
+    s = _jk_sampler(_JkBms(False), c)
+    asyncio.run(s())
+    n = [t for t, _, _ in c.log].count('jk_fake/settings/cell_ovp')
+    clock[0] += 5
+    asyncio.run(s())
+    assert [t for t, _, _ in c.log].count('jk_fake/settings/cell_ovp') == n + 1

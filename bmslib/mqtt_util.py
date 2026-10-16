@@ -455,6 +455,8 @@ def publish_hass_discovery(client, device_topic, expire_after_seconds: int, samp
 SETTINGS_EXPIRE_MIN_S = 2 * 3600
 # HA rejects sensor states longer than 255 characters
 _HA_STATE_MAX_LEN = 255
+# settings states are sent again this long after a settings discovery (see resend_after_discovery)
+SETTINGS_RESEND_AFTER_DISCOVERY_S = 2.0
 
 
 def _settings_command_topic(node_id, name):
@@ -542,6 +544,7 @@ class MqttSettingsPublisher:
         self.device_json = device_json
         self._discovered = None  # (exclude, writable) of the last discovery
         self._force_states = False  # next states() goes past the dedup (after a discovery)
+        self._resend_at = None  # time.time() for the one-time re-send after a discovery
 
     def discovery(self):
         """Publish the settings discovery now; the next states() is forced."""
@@ -552,6 +555,16 @@ class MqttSettingsPublisher:
                                       self.expire_after_seconds, exclude=self.exclude)
         self._discovered = (frozenset(self.exclude), self.writable)
         self._force_states = True
+        self._resend_at = time.time() + SETTINGS_RESEND_AFTER_DISCOVERY_S
+
+    def resend_after_discovery(self, settings: dict):
+        """Called every sample: states sent right behind the configs can reach the broker before
+        HA subscribed to the new entities' state topics (not retained, so lost); send them once
+        more a moment after each discovery."""
+        if self._resend_at is None or not settings or time.time() < self._resend_at:
+            return
+        self._resend_at = None
+        self.states(settings, force=True)
 
     def _ensure_discovery(self):
         if self.writable is not None and self._discovered != (frozenset(self.exclude), self.writable):

@@ -542,6 +542,8 @@ class BmsSampler:
                 if self.settings_publisher is not None:
                     self.settings_publisher.exclude = self._settings_excluded
                 await self.settings_service.tick(bms, self.settings_publisher or NullSettingsPublisher())
+                if self.settings_publisher is not None:
+                    self.settings_publisher.resend_after_discovery(getattr(bms, 'settings', None))
 
             t_now = time.time()
             t_hour = t_now * (1 / 3600)
