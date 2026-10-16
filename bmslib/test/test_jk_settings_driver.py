@@ -260,6 +260,43 @@ def test_write_no_extra_wait_when_settled(monkeypatch):
     assert _sleep_between(events, 0, tx[0]) == 0, events
 
 
+def test_settings_query_time_marked_when_sent():
+    """A 0x96 that gets no answer still makes the BMS busy: the time is set before sending."""
+    bms, client = _make()
+    bms.TIMEOUT = 0.2
+    seen = []
+
+    async def silent(char, data, response=False):
+        seen.append(bms._settings_query_t)  # already marked when the frame goes out
+
+    client.write_gatt_char = silent
+    t0 = time.monotonic()
+    try:
+        asyncio.run(bms.refresh_settings())
+        assert False, 'expected a timeout'
+    except (TimeoutError, asyncio.TimeoutError):
+        pass
+    assert seen and seen[0] is not None and seen[0] >= t0
+    assert bms._settings_query_t is not None and bms._settings_query_t >= t0
+
+
+def test_settings_query_time_updated_after_the_answer():
+    bms, client = _make()
+    asyncio.run(bms.refresh_settings())
+    t_after = bms._settings_query_t
+    write = client.write_gatt_char
+    sent = []
+
+    async def logged(char, data, response=False):
+        sent.append(bms._settings_query_t)
+        await write(char, data, response)
+
+    client.write_gatt_char = logged
+    asyncio.run(bms.refresh_settings())
+    assert sent[0] > t_after  # marked before sending
+    assert bms._settings_query_t >= sent[0]  # and again after the answer
+
+
 def test_write_applied_despite_busy_bms():
     # dummy ignores writes within 0.5 s of its last 0x96 answer, like the real BMS
     bms, client = _make(settle=0.6, readback=0.05, drop_writes_within_s=0.5)

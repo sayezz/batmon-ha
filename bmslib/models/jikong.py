@@ -180,7 +180,8 @@ class JKBt(BtBms):
         self._has_float_charger = None # used for the `float_charge` switch
         self.settings: Optional[dict] = None  # decoded 0x01 settings frame, see refresh_settings()
         self.settings_raw: Optional[bytes] = None
-        self._settings_query_t: Optional[float] = None  # time.monotonic() of the last answered 0x96
+        # time.monotonic() of the last 0x96 settings query: set when it is sent and again when answered
+        self._settings_query_t: Optional[float] = None
 
     def _notification_handler(self, _sender, data):
         data = bytes(data)
@@ -369,6 +370,9 @@ class JKBt(BtBms):
         with await self._fetch_futures.acquire_timeout(resp, timeout=self.TIMEOUT / 2):
             frame = _jk_command(cmd, [])
             self.logger.debug("write %s", frame)
+            if cmd == 0x96:
+                # also when the answer never comes (timeout): the BMS may be busy with it anyway
+                self._settings_query_t = time.monotonic()
             await self.client.write_gatt_char(self.char_handle_write, data=frame)
             res = await self._fetch_futures.wait_for(resp, self.TIMEOUT)
             if cmd == 0x96:
