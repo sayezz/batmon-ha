@@ -61,6 +61,10 @@ class JkSettingsService:
         self._dropped = collections.deque(maxlen=MAX_PENDING)  # (name, payload) rejected: queue full
         self._last_refresh = None
         self._backed_up = False
+        # a write interrupted by a BLE error may or may not have reached the BMS:
+        # (name, before, requested), resolved by the next successful refresh
+        self._unconfirmed = None
+        self._seen_connect = None  # bms.connect_count at the last tick
 
     # called from any thread (paho)
     def enqueue(self, name: str, payload: str) -> None:
@@ -79,6 +83,12 @@ class JkSettingsService:
         if not bms.supports_settings():
             return
 
+        connect_count = getattr(bms, 'connect_count', None)
+        if connect_count != self._seen_connect:
+            # a new BLE link: settings may have changed meanwhile (e.g. in the JK app), re-read them
+            self._seen_connect = connect_count
+            self._last_refresh = None
+
         with self._lock:
             has_pending = bool(self._pending)
 
@@ -95,6 +105,7 @@ class JkSettingsService:
             self._refresh_failed_at = None
             self._last_refresh = now
             publish.states(bms.settings)
+            self._resolve_unconfirmed(bms, publish)
 
         if self._config_error is not None:
             publish.last_change('Config error: %s' % self._config_error)
@@ -145,10 +156,15 @@ class JkSettingsService:
         try:
             res = await bms.write_setting(name, value)
         except Exception as e:
+            # the write may have reached the BMS before the link failed: unknown, not rejected
             reason = 'BLE error: %s' % e
-            logger.error('%s write %s=%s failed: %s', self.alias, name, value, e)
+            logger.error('%s write %s=%s failed, outcome unknown: %s', self.alias, name, value, e)
+            self._unconfirmed = (name, before, value)
+            self._last_refresh = None  # re-read on the next tick (the refresh backoff still applies)
             self._audit(name, before, value, None, False, reason)
-            self._reject(publish, bms, name, shown, reason)
+            if bms.settings is not None:
+                publish.states(bms.settings)  # snap the HA field back until the re-read
+            publish.last_change('UNKNOWN %s %s: %s; value will be re-read' % (name, shown, reason))
             raise
 
         if not res.ok:
@@ -165,6 +181,29 @@ class JkSettingsService:
             text = 'FAILED %s %s read back %s%s; writes locked' % (
                 name, format_value(name, res.requested), format_value(name, res.after), also)
             logger.error('%s settings: %s (%s)', self.alias, text, res.reason)
+        publish.last_change(text)
+
+    def _resolve_unconfirmed(self, bms, publish):
+        """After a refresh: report whether a write interrupted by a BLE error took effect."""
+        if self._unconfirmed is None or bms.settings is None:
+            return
+        name, before, requested = self._unconfirmed
+        self._unconfirmed = None
+        s = SETTINGS[name]
+        after = bms.settings.get(name)
+        if after is None:
+            applied = False
+        elif s.kind == 'switch':
+            applied = bool(after) == bool(requested)
+        else:
+            applied = abs(float(after) - requested) <= s.step / 2
+        unit = s.unit or ''
+        if applied:
+            text = 'CONFIRMED %s %s%s' % (name, format_value(name, after), unit)
+        else:
+            text = 'NOT APPLIED %s (is %s%s)' % (name, format_value(name, after), unit)
+        logger.info('%s settings: %s (re-read after a BLE error)', self.alias, text)
+        self._audit(name, before, requested, after, applied, 're-read after BLE error')
         publish.last_change(text)
 
     def _prepare(self, bms, name, payload):

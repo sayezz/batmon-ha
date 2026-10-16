@@ -106,6 +106,40 @@ def test_ok_write_reports_no_other_changes():
     assert res.ok and res.others == {}
 
 
+def test_connect_count_counts_completed_connects(monkeypatch):
+    from bmslib.bt import BtBms
+
+    async def link_up(self, timeout=20):
+        pass
+
+    monkeypatch.setattr(BtBms, 'connect', link_up)  # no Bluetooth; JKBt.connect does the rest
+    bms = JKBt("00:11:22:33:44:55", name="jk")
+    client = bms.client = JKDummy(is_new_11x=True, settings_frame=_fixture(), stream=False)
+    write = client.write_gatt_char
+
+    async def write_and_stream_once(char, data, response=False):
+        await write(char, data, response)
+        if bytes(data[:5]) == b'\xaaU\x90\xeb\x96':  # connect waits for a status frame too
+            client._callbacks[JKBt.CHAR_UUID](client, client.MSGS[1])
+
+    client.write_gatt_char = write_and_stream_once
+    assert bms.connect_count == 0
+    asyncio.run(bms.connect())
+    assert bms.connect_count == 1
+    asyncio.run(bms.connect())
+    assert bms.connect_count == 2
+
+    async def no_answer(cmd, resp):
+        raise TimeoutError('no device info')
+
+    bms._q = no_answer  # connect fails half-way: not counted
+    try:
+        asyncio.run(bms.connect())
+    except TimeoutError:
+        pass
+    assert bms.connect_count == 2
+
+
 def _fetch_with_fw(sw_version):
     """JKBt.fetch() with firmware detection answering `sw_version` (None: detection fails)."""
     bms = JKBt("00:11:22:33:44:55", name="jk")

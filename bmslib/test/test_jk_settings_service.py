@@ -219,16 +219,32 @@ def test_queue_limit(tmp_path):
     assert len(pub.texts) == 21  # 20 processed (not whitelisted) + 1 dropped
 
 
-def test_ble_error_propagates_and_keeps_queue(tmp_path):
-    bms, client = _make()
-    svc, pub = _service(tmp_path, writable={'charge_utp', 'charge_utpr'}), FakePublish()
-    _tick(svc, bms, pub)
+def _ble_error_during_write(bms, reaches_bms):
+    """Replace bms.write_setting: the link drops during the write (after it reached the BMS or not)."""
+    orig = bms.write_setting
 
-    async def broken(*a, **kw):
+    async def broken(name, value):
+        if reaches_bms:
+            from bmslib.models.jk_settings import encode_setting
+            await bms._write(*encode_setting(name, value))
         raise OSError('link lost')
 
-    orig = bms.write_setting
     bms.write_setting = broken
+    return orig
+
+
+def _audit_lines(tmp_path):
+    with open(tmp_path / 'settings_audit.jsonl') as f:
+        return [json.loads(l) for l in f]
+
+
+def test_ble_error_propagates_and_keeps_queue(tmp_path):
+    bms, client = _make()
+    now = [T0]
+    svc, pub = _service(tmp_path, writable={'charge_utp', 'charge_utpr'}, clock=lambda: now[0]), FakePublish()
+    _tick(svc, bms, pub)
+
+    orig = _ble_error_during_write(bms, reaches_bms=False)
     svc.enqueue('charge_utp', '3')
     svc.enqueue('charge_utpr', '6')
     try:
@@ -236,14 +252,96 @@ def test_ble_error_propagates_and_keeps_queue(tmp_path):
         assert False, 'BLE error must propagate'
     except OSError:
         pass
-    assert pub.texts[-1] == 'Rejected charge_utp 3: BLE error: link lost'
-    with open(tmp_path / 'settings_audit.jsonl') as f:
-        lines = [json.loads(l) for l in f]
+    # the write may have reached the BMS: not "Rejected"
+    assert pub.texts[-1] == 'UNKNOWN charge_utp 3: BLE error: link lost; value will be re-read'
+    lines = _audit_lines(tmp_path)
     assert lines[-1]['ok'] is False and lines[-1]['name'] == 'charge_utp'
+    assert lines[-1]['reason'] == 'BLE error: link lost'
+    assert svc.locked is False
 
     bms.write_setting = orig
-    _tick(svc, bms, pub)  # the second request stayed queued
-    assert pub.texts[-1] == 'OK charge_utpr 5 -> 6°C'
+    now[0] += 1  # well inside the refresh period: the re-read is forced anyway
+    n_states = len(pub.states_calls)
+    _tick(svc, bms, pub)
+    assert len(pub.states_calls) > n_states
+    assert pub.texts[-2:] == ['NOT APPLIED charge_utp (is 2°C)', 'OK charge_utpr 5 -> 6°C']  # queue kept
+    line = _audit_lines(tmp_path)[-2]
+    assert (line['name'], line['requested'], line['after'], line['ok']) == ('charge_utp', 3.0, 2.0, False)
+    assert 're-read' in line['reason']
+
+
+def test_ble_error_after_the_write_reached_the_bms(tmp_path):
+    bms, client = _make()
+    now = [T0]
+    svc, pub = _service(tmp_path, writable={'charge_utp'}, clock=lambda: now[0]), FakePublish()
+    _tick(svc, bms, pub)
+    orig = _ble_error_during_write(bms, reaches_bms=True)
+    svc.enqueue('charge_utp', '3')
+    try:
+        _tick(svc, bms, pub)
+    except OSError:
+        pass
+    bms.write_setting = orig
+    now[0] += 1
+    _tick(svc, bms, pub)
+    assert pub.texts[-1] == 'CONFIRMED charge_utp 3°C'
+    assert pub.states_calls[-1]['charge_utp'] == 3.0
+    line = _audit_lines(tmp_path)[-1]
+    assert (line['name'], line['before'], line['requested'], line['after'], line['ok']) == \
+           ('charge_utp', 2.0, 3.0, 3.0, True)
+    _tick(svc, bms, pub)  # reported once
+    assert pub.texts.count('CONFIRMED charge_utp 3°C') == 1
+
+
+def test_reread_after_ble_error_respects_the_backoff(tmp_path):
+    bms, client = _make()
+    now = [T0]
+    svc = _service(tmp_path, writable={'charge_utp'}, clock=lambda: now[0], refresh_retry_s=60)
+    pub = FakePublish()
+    _tick(svc, bms, pub)
+    orig_write, orig_refresh = _ble_error_during_write(bms, reaches_bms=True), bms.refresh_settings
+    svc.enqueue('charge_utp', '3')
+    try:
+        _tick(svc, bms, pub)
+    except OSError:
+        pass
+    bms.write_setting = orig_write
+    calls = []
+
+    async def broken():
+        calls.append(now[0])
+        raise TimeoutError('no settings frame')
+
+    bms.refresh_settings = broken
+    now[0] += 1
+    try:
+        _tick(svc, bms, pub)
+    except TimeoutError:
+        pass
+    now[0] += 30
+    _tick(svc, bms, pub)  # inside the backoff: no attempt
+    assert len(calls) == 1
+    bms.refresh_settings = orig_refresh
+    now[0] += 30
+    _tick(svc, bms, pub)
+    assert pub.texts[-1] == 'CONFIRMED charge_utp 3°C'
+
+
+def test_reread_after_reconnect(tmp_path):
+    bms, client = _make()
+    now = [T0]
+    svc, pub = _service(tmp_path, clock=lambda: now[0], refresh_period=300), FakePublish()
+    _tick(svc, bms, pub)
+    now[0] += 10
+    _tick(svc, bms, pub)
+    assert len(pub.states_calls) == 1
+    bms.connect_count += 1  # the sampler reconnected the BMS
+    now[0] += 10
+    _tick(svc, bms, pub)
+    assert len(pub.states_calls) == 2
+    now[0] += 10
+    _tick(svc, bms, pub)
+    assert len(pub.states_calls) == 2  # once per reconnect
 
 
 def test_refresh_failure_backs_off(tmp_path):

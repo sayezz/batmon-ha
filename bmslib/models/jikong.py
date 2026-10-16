@@ -167,6 +167,10 @@ class JKBt(BtBms):
         # enough, _decode_sample falls back to True when detection failed, and a JK02_24S BMS
         # gives other meanings to the same registers (e.g. 0x21 is voltage calibration there).
         self.settings_protocol_confirmed = False
+        # completed connect() calls. Every new link goes through connect() (BtBms.__aenter__, also
+        # after the sampler's periodic reconnect or a half-done connect), and it is only counted
+        # once the link answered; the settings service re-reads the settings when it changes.
+        self.connect_count = 0
         self._has_float_charger = None # used for the `float_charge` switch
         self.settings: Optional[dict] = None  # decoded 0x01 settings frame, see refresh_settings()
         self.settings_raw: Optional[bytes] = None
@@ -347,6 +351,7 @@ class JKBt(BtBms):
         buf, _ = self._resp_table[0x01]
         self.num_cells = buf[114]
         assert 0 < self.num_cells <= 24, "num_cells unexpected %s" % self.num_cells
+        self.connect_count += 1
 
     async def disconnect(self):
         await self.client.stop_notify(self.char_handle_notify)

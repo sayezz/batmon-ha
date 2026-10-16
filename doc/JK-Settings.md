@@ -50,11 +50,15 @@ All entities belong to the BMS device in Home Assistant.
   * `Unchanged cell_ovp 3.65V` (the BMS already has this value, nothing was written)
   * `Rejected cell_ovp 4.5: <reason>` (nothing was written, the entity snaps back to the BMS value)
   * `FAILED cell_ovp 3.6 read back 3.65; writes locked`
+  * `UNKNOWN cell_ovp 3.6: BLE error: <error>; value will be re-read` (the connection failed during the write,
+    the value **may have been written**), followed after the re-read by
+    `CONFIRMED cell_ovp 3.6V` or `NOT APPLIED cell_ovp (is 3.65V)`
   * `Config error: <reason>` (bad `settings_write`)
 * On a JK-PB with a built-in float charger, `charging_float_mode` gets no entity of its own: it is already the
   `float_charge` switch.
 
-Settings are read when batmon starts, every 5 minutes, before each change and right after it. If reading fails,
+Settings are read when batmon starts, after every reconnect to the BMS, every 5 minutes, before each change and
+right after it. If reading fails,
 the next try is 60 seconds later; requests made meanwhile wait in a queue (at most 20 per BMS, more are rejected
 with `queue full`).
 
@@ -175,9 +179,11 @@ batmon (restart the add-on) to unlock.
 
 ### Bluetooth error during a write
 
-If the connection fails during the write or the read-back (`Rejected …: BLE error: …`), batmon cannot tell
-whether the BMS took the value. Writes are **not** locked in this case. The next settings read (at the latest
-5 minutes later) shows the real value: check it before trying again.
+If the connection fails during the write or the read-back, batmon cannot tell whether the BMS took the value
+(`UNKNOWN …: BLE error: …; value will be re-read`; unlike `Rejected`, which always means nothing was written).
+Writes are **not** locked in this case. batmon reads the settings again on the next sample (after a failed read
+60 seconds later, and always after a reconnect) and reports `CONFIRMED …` or `NOT APPLIED … (is …)`, also in
+`settings_audit.jsonl`. Check the result before trying again.
 
 ## Files
 
