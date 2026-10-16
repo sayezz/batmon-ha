@@ -350,6 +350,60 @@ def test_ble_error_after_the_write_reached_the_bms(tmp_path):
     assert pub.texts.count('CONFIRMED charge_utp 3°C') == 1
 
 
+def _unknown_write(tmp_path, bms, now, name, payload, extra=None):
+    """Tick a write that fails with a BLE error after reaching the BMS (plus `extra`
+    (name, value) landing too), then re-read; returns (svc, pub)."""
+    from bmslib.models.jk_settings import encode_setting
+    svc, pub = _service(tmp_path, writable={name}, clock=lambda: now[0]), FakePublish()
+    _tick(svc, bms, pub)
+    orig = bms.write_setting
+
+    async def broken(n, value):
+        await bms._write(*encode_setting(n, value))
+        if extra:
+            await bms._write(*encode_setting(*extra))
+        raise OSError('link lost')
+
+    bms.write_setting = broken
+    svc.enqueue(name, payload)
+    try:
+        _tick(svc, bms, pub)
+    except OSError:
+        pass
+    bms.write_setting = orig
+    now[0] += 1
+    _tick(svc, bms, pub)
+    return svc, pub
+
+
+def test_unknown_write_confirmed_with_other_change_locks(tmp_path):
+    bms, client = _make()
+    svc, pub = _unknown_write(tmp_path, bms, [T0], 'charge_utp', '3', extra=('display_always_on', True))
+    assert pub.texts[-1] == ('CONFIRMED charge_utp 3°C; also changed: display_always_on OFF -> ON; '
+                             'writes locked')
+    assert svc.locked is True
+    line = _audit_lines(tmp_path)[-1]
+    assert line['ok'] is False and 'display_always_on OFF -> ON' in line['reason']
+    svc.enqueue('charge_utp', '4')
+    _tick(svc, bms, pub)
+    assert pub.texts[-1].endswith('writes locked after a failed read-back; restart batmon')
+
+
+def test_unknown_write_misrouted_locks(tmp_path):
+    bms, client = _make()
+    client.misroute = {0x18: 'charge_utpr'}
+    svc, pub = _unknown_write(tmp_path, bms, [T0], 'charge_utp', '3')
+    assert pub.texts[-1] == 'NOT APPLIED charge_utp (is 2°C); also changed: charge_utpr 5 -> 3°C; writes locked'
+    assert svc.locked is True
+
+
+def test_unknown_write_without_side_effects_does_not_lock(tmp_path):
+    bms, client = _make()
+    svc, pub = _unknown_write(tmp_path, bms, [T0], 'charge_utp', '3')
+    assert pub.texts[-1] == 'CONFIRMED charge_utp 3°C'
+    assert svc.locked is False
+
+
 def test_reread_after_ble_error_respects_the_backoff(tmp_path):
     bms, client = _make()
     now = [T0]

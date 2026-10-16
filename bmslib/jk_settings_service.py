@@ -155,6 +155,7 @@ class JkSettingsService:
             return
 
         before = bms.settings.get(name)
+        before_all = dict(bms.settings)
         try:
             self._backup_once(bms)
         except OSError as e:  # never write without a backup
@@ -167,7 +168,7 @@ class JkSettingsService:
             # the write may have reached the BMS before the link failed: unknown, not rejected
             reason = 'BLE error: %s' % e
             logger.error('%s write %s=%s failed, outcome unknown: %s', self.alias, name, value, e)
-            self._unconfirmed = (name, before, value)
+            self._unconfirmed = (name, before, value, before_all)
             self._last_refresh = None  # re-read on the next tick (the refresh backoff still applies)
             self._audit(name, before, value, None, False, reason)
             if bms.settings is not None:
@@ -196,7 +197,7 @@ class JkSettingsService:
         """After a refresh: report whether a write interrupted by a BLE error took effect."""
         if self._unconfirmed is None or bms.settings is None:
             return
-        name, before, requested = self._unconfirmed
+        name, before, requested, before_all = self._unconfirmed
         self._unconfirmed = None
         s = SETTINGS[name]
         after = bms.settings.get(name)
@@ -211,8 +212,20 @@ class JkSettingsService:
             text = 'CONFIRMED %s %s%s' % (name, format_value(name, after), unit)
         else:
             text = 'NOT APPLIED %s (is %s%s)' % (name, format_value(name, after), unit)
-        logger.info('%s settings: %s (re-read after a BLE error)', self.alias, text)
-        self._audit(name, before, requested, after, applied, 're-read after BLE error')
+        reason = 're-read after BLE error'
+        # whole-frame check like write_setting: another setting changing with the write means
+        # the register meant something else
+        others = {n: (before_all.get(n), v) for n, v in bms.settings.items()
+                  if n != name and before_all.get(n) != v}
+        if others:
+            self.locked = True  # before any file I/O
+            also = 'also changed: ' + format_changes(others)
+            text += '; %s; writes locked' % also
+            reason += '; ' + also
+            logger.error('%s settings: %s (re-read after a BLE error)', self.alias, text)
+        else:
+            logger.info('%s settings: %s (re-read after a BLE error)', self.alias, text)
+        self._audit(name, before, requested, after, applied and not others, reason)
         publish.last_change(text)
 
     def _prepare(self, bms, name, payload):
