@@ -528,6 +528,8 @@ class BmsSampler:
             t_fetch = time.time()
 
             sample = await bms.fetch()
+            # the expiry check below is about the fetch, not about the settings writes after it
+            t_fetched = time.time()
 
             if self.settings_service is not None:
                 if self._settings_exclude is None:
@@ -539,7 +541,7 @@ class BmsSampler:
             t_now = time.time()
             t_hour = t_now * (1 / 3600)
 
-            if sample.timestamp < t_now - max(self.expire_after_seconds, MIN_VALUE_EXPIRY):
+            if sample.timestamp < t_fetched - max(self.expire_after_seconds, MIN_VALUE_EXPIRY):
                 raise SampleExpiredError("sample %s expired" % sample.timestamp)
                 # logger.warning('%s expired sample', bms.name)
                 # return

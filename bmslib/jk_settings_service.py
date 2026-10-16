@@ -24,6 +24,10 @@ from bmslib.util import get_logger
 logger = get_logger()
 
 MAX_PENDING = 20
+# A write takes ~2 s (WRITE_SETTLE_S + READBACK_DELAY_S + the read-back), and the tick runs
+# inside the sample: more writes wait for the next tick. Rejected/unchanged requests are instant
+# and do not count.
+MAX_WRITES_PER_TICK = 3
 
 
 class NullSettingsPublisher:
@@ -125,34 +129,39 @@ class JkSettingsService:
                 break
             self._reject(publish, bms, item[0], item[1], 'queue full')
 
+        writes = 0
         for _ in range(n_pending):  # FIFO: the first n_pending items are this tick's snapshot
+            if writes >= MAX_WRITES_PER_TICK:
+                break  # the rest stays queued, in order, for the next tick (which re-reads first)
             item = self._pop(self._pending)
             if item is None:
                 break
-            await self._handle(bms, publish, *item)
+            if await self._handle(bms, publish, *item):
+                writes += 1
 
-    async def _handle(self, bms, publish, name, payload):
+    async def _handle(self, bms, publish, name, payload) -> bool:
+        """Handle one request; True if it wrote to the BMS (False: rejected or unchanged)."""
         payload = '' if payload is None else str(payload)
         shown = payload.strip() or "''"  # an empty payload, visibly
         try:
             value = self._prepare(bms, name, payload)
         except _Rejected as e:
             self._reject(publish, bms, name, shown, str(e))
-            return
+            return False
         except SettingError as e:
             self._reject(publish, bms, name, shown, str(e))
-            return
+            return False
         except Exception as e:
             logger.error('%s settings request %s=%r failed: %s', self.alias, name, payload, e, exc_info=True)
             self._reject(publish, bms, name, shown, str(e) or type(e).__name__)
-            return
+            return False
 
         if value is _UNCHANGED:
             s = SETTINGS[name]
             publish.states(bms.settings, force=True)  # e.g. 2.6504 typed: show 2.65 again
             publish.last_change('Unchanged %s %s%s' % (name, format_value(name, bms.settings.get(name)),
                                                       s.unit or ''))
-            return
+            return False
 
         before = bms.settings.get(name)
         before_all = dict(bms.settings)
@@ -161,7 +170,7 @@ class JkSettingsService:
         except OSError as e:  # never write without a backup
             logger.error('%s settings backup failed: %s', self.alias, e)
             self._reject(publish, bms, name, shown, 'backup failed: %s' % e)
-            return
+            return False
         try:
             res = await bms.write_setting(name, value)
         except Exception as e:
@@ -192,6 +201,7 @@ class JkSettingsService:
                 name, format_value(name, res.requested), format_value(name, res.after), also)
             logger.error('%s settings: %s (%s)', self.alias, text, res.reason)
         publish.last_change(text)
+        return True
 
     def _resolve_unconfirmed(self, bms, publish):
         """After a refresh: report whether a write interrupted by a BLE error took effect."""

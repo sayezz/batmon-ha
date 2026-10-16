@@ -264,6 +264,39 @@ def test_tick_drains_only_what_was_queued_at_its_start(tmp_path):
     assert len(pub.states_calls) > refreshes
 
 
+def test_writes_per_tick_capped(tmp_path):
+    """Each write takes ~2 s (settle + read-back): at most MAX_WRITES_PER_TICK per tick, the rest
+    wait in FIFO order for the next tick (which re-reads the settings first)."""
+    from bmslib.jk_settings_service import MAX_WRITES_PER_TICK
+    assert MAX_WRITES_PER_TICK == 3
+    bms, client = _make()
+    svc, pub = _service(tmp_path, writable={'charge_utpr'}), FakePublish()
+    for v in (6, 7, 8, 9, 10):
+        svc.enqueue('charge_utpr', str(v))
+    _tick(svc, bms, pub)
+    assert pub.texts == ['OK charge_utpr 5 -> 6°C', 'OK charge_utpr 6 -> 7°C', 'OK charge_utpr 7 -> 8°C']
+    assert len(client.writes) == 3
+    n_states = len(pub.states_calls)
+    _tick(svc, bms, pub)
+    assert pub.texts[3:] == ['OK charge_utpr 8 -> 9°C', 'OK charge_utpr 9 -> 10°C']
+    assert len(client.writes) == 5
+    assert len(pub.states_calls) > n_states  # re-read first
+
+
+def test_rejections_do_not_count_as_writes(tmp_path):
+    bms, client = _make()
+    svc, pub = _service(tmp_path, writable={'charge_utpr'}), FakePublish()
+    for name, v in [('cell_uvp', '2.7'), ('charge_utpr', '6'), ('charge_utpr', 'x'), ('charge_utpr', '6'),
+                    ('charge_utpr', '7'), ('charge_utpr', '8'), ('charge_utpr', '9')]:
+        svc.enqueue(name, v)
+    _tick(svc, bms, pub)
+    assert len(client.writes) == 3
+    assert pub.texts[-1] == 'OK charge_utpr 7 -> 8°C'
+    assert len(pub.texts) == 6  # 2 rejected, 1 unchanged, 3 written
+    _tick(svc, bms, pub)
+    assert pub.texts[-1] == 'OK charge_utpr 8 -> 9°C'
+
+
 def test_queue_limit(tmp_path):
     bms, _ = _make()
     svc, pub = _service(tmp_path), FakePublish()

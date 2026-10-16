@@ -372,3 +372,26 @@ def test_float_switch_withheld_while_float_charger_unknown(_no_sleep):
     assert not [t for t in c.published if 'charging_float_mode' in t]
     assert c.subscribed == []  # subscribed once the exclusion is known
     assert c.published['jk_fake/settings/cell_ovp'] == '3.65'
+
+
+def test_slow_settings_tick_does_not_expire_the_fetched_sample(_no_sleep, monkeypatch):
+    """Settings writes (~2 s each) run between fetch() and the expiry check: their duration must
+    not turn the fresh sample into a SampleExpiredError."""
+    import bmslib.sampling as sampling
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(sampling.time, 'time', lambda: clock[0])
+
+    class _Fresh(_JkBms):
+        async def fetch(self):
+            return BmsSample(voltage=26.0, current=1.0, soc=60.0, timestamp=clock[0])
+
+    class _SlowService:
+        writable = frozenset()
+
+        async def tick(self, bms, publish):
+            clock[0] += 120  # e.g. several writes, longer than expire_after and MIN_VALUE_EXPIRY
+
+    s = BmsSampler(_Fresh(False), mqtt_client=None, dt_max_seconds=120, expire_after_seconds=60,
+                   publish_period=3600, settings_service=_SlowService())
+    res = asyncio.run(s())
+    assert res is not None and s.num_samples == 1
