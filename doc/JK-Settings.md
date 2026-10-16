@@ -166,8 +166,10 @@ The rejection says which one to change first, e.g.
 
 ### Read-back mismatch: writes locked
 
-If the value read back differs from the one written, the BMS did not take it (or took something else).
-batmon shows `FAILED … writes locked`, logs it, and refuses **all** further writes to this BMS until batmon
+batmon compares **all** settings before and after the write. If the value read back differs from the one
+written, the BMS did not take it (or took something else). If any other setting changed with it, the register
+means something else on this BMS. Either way batmon shows `FAILED … writes locked` (with `also changed: …` for
+other settings that changed), logs it, and refuses **all** further writes to this BMS until batmon
 restarts. Reading continues. Check the value in Home Assistant or the JK app, fix it if needed, then restart
 batmon (restart the add-on) to unlock.
 

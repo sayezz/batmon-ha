@@ -329,6 +329,13 @@ def format_value(name: str, value) -> str:
         return str(value)
 
 
+def format_changes(changes: dict) -> str:
+    """{name: (old, new)} -> 'charge_utpr 5 -> 3°C, display_always_on OFF -> ON' (sorted by name)."""
+    return ', '.join('%s %s -> %s%s' % (n, format_value(n, old), format_value(n, new),
+                                        (SETTINGS[n].unit if n in SETTINGS else None) or '')
+                     for n, (old, new) in sorted(changes.items()))
+
+
 def validate_change(name: str, value, current: dict) -> None:
     """Check that setting `name` to `value` keeps related settings consistent.
 

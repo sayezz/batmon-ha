@@ -16,7 +16,7 @@ import threading
 import time
 from typing import Optional
 
-from bmslib.models.jk_settings import (SETTINGS, SettingError, encode_setting, format_value,
+from bmslib.models.jk_settings import (SETTINGS, SettingError, encode_setting, format_changes, format_value,
                                        parse_write_option, validate_change)
 from bmslib.util import get_logger
 
@@ -160,8 +160,10 @@ class JkSettingsService:
             text = 'OK %s %s -> %s%s' % (name, format_value(name, res.before), format_value(name, res.after), unit)
             logger.info('%s settings: %s', self.alias, text)
         else:
-            text = 'FAILED %s %s read back %s; writes locked' % (
-                name, format_value(name, res.requested), format_value(name, res.after))
+            others = getattr(res, 'others', None) or {}
+            also = ('; also changed: ' + format_changes(others)) if others else ''
+            text = 'FAILED %s %s read back %s%s; writes locked' % (
+                name, format_value(name, res.requested), format_value(name, res.after), also)
             logger.error('%s settings: %s (%s)', self.alias, text, res.reason)
         publish.last_change(text)
 

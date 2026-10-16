@@ -74,6 +74,38 @@ def test_write_setting_mismatch():
     assert [reg for reg, _ in client.writes] == [0x18]
 
 
+def test_write_landing_on_another_setting_fails():
+    bms, client = _make()
+    client.misroute = {0x18: 'charge_utpr'}  # charge_utp's register writes charge_utpr
+    res = asyncio.run(bms.write_setting('charge_utp', 3.0))
+    assert res.ok is False
+    assert 'charge_utpr 5 -> 3°C' in res.reason, res.reason
+    assert res.others == {'charge_utpr': (5.0, 3.0)}
+
+
+def test_write_with_a_side_effect_fails_even_if_the_target_matches():
+    bms, client = _make()
+    apply = client._apply_write
+
+    def apply_and_flip(setting, payload):
+        apply(setting, payload)
+        client._settings[282] ^= 0x10  # display_always_on toggles as well
+        client._settings[-1] = calc_crc(client._settings[:-1])
+
+    client._apply_write = apply_and_flip
+    res = asyncio.run(bms.write_setting('charge_utp', 3.0))
+    assert res.after == 3.0
+    assert res.ok is False
+    assert 'display_always_on OFF -> ON' in res.reason, res.reason
+    assert 'read-back' not in res.reason
+
+
+def test_ok_write_reports_no_other_changes():
+    bms, _ = _make()
+    res = asyncio.run(bms.write_setting('charge_utp', 3.0))
+    assert res.ok and res.others == {}
+
+
 def _fetch_with_fw(sw_version):
     """JKBt.fetch() with firmware detection answering `sw_version` (None: detection fails)."""
     bms = JKBt("00:11:22:33:44:55", name="jk")

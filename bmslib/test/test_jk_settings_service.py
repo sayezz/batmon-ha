@@ -194,6 +194,20 @@ def test_mismatch_locks(tmp_path):
     assert len(lines) == 1 and lines[0]['ok'] is False and 'read-back' in lines[0]['reason']
 
 
+def test_other_setting_changed_locks(tmp_path):
+    bms, client = _make()
+    client.misroute = {0x18: 'charge_utpr'}
+    svc, pub = _service(tmp_path, writable={'charge_utp'}), FakePublish()
+    svc.enqueue('charge_utp', '3')
+    _tick(svc, bms, pub)
+    assert svc.locked is True
+    assert pub.texts[-1] == ('FAILED charge_utp 3 read back 2; also changed: charge_utpr 5 -> 3°C; '
+                             'writes locked')
+    with open(tmp_path / 'settings_audit.jsonl') as f:
+        line = json.loads(f.readline())
+    assert line['ok'] is False and 'charge_utpr 5 -> 3°C' in line['reason']
+
+
 def test_queue_limit(tmp_path):
     bms, _ = _make()
     svc, pub = _service(tmp_path), FakePublish()

@@ -19,25 +19,27 @@ fix connection abort:
 import asyncio
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Callable, Dict, Optional, Tuple
 
 from bmslib.bms import BmsSample, DeviceInfo
 from bmslib.bt import BtBms, enumerate_services
-from bmslib.models.jk_settings import SETTINGS, decode_settings, encode_setting
+from bmslib.models.jk_settings import SETTINGS, decode_settings, encode_setting, format_changes
 from bmslib.util import to_hex_str
 
 
 @dataclass
 class WriteResult:
     """Outcome of JKBt.write_setting: `ok` only if the settings frame read back
-    after the write holds the requested value."""
+    after the write holds the requested value and no other setting changed."""
     ok: bool
     name: str
     before: object
     requested: object
     after: object
     reason: str = ''
+    # other settings that changed with the write: {name: (before, after)}
+    others: dict = field(default_factory=dict)
 
 
 def calc_crc(message_bytes):
@@ -553,19 +555,23 @@ class JKBt(BtBms):
         return settings
 
     async def write_setting(self, name: str, value) -> WriteResult:
-        """Write one setting, then read the settings frame back to verify it.
+        """Write one setting, then read the whole settings frame back to verify it.
 
-        No range/consistency validation here (that is the caller's job); encoding
-        errors raise SettingError, BLE errors propagate.
+        No cross-setting consistency checks here (validate_change is the caller's job);
+        encode_setting checks range and step and raises SettingError. BLE errors propagate.
+        The write fails (ok=False) when the target does not read back as requested, or
+        when any other setting changed with it (the register meant something else).
         """
         register, data = encode_setting(name, value)
         if self.settings is None:
             await self.refresh_settings()
-        before = self.settings.get(name)
+        before_all = dict(self.settings)
+        before = before_all.get(name)
 
         await self._write(register, data)
         await asyncio.sleep(0.3)  # give the BMS time to apply before reading back
-        after = (await self.refresh_settings()).get(name)
+        after_all = await self.refresh_settings()
+        after = after_all.get(name)
 
         s = SETTINGS[name]
         if after is None:
@@ -574,10 +580,18 @@ class JKBt(BtBms):
             ok = bool(after) == bool(value)
         else:
             ok = abs(after - value) <= s.step / 2
-        reason = '' if ok else 'read-back %s != requested %s' % (after, value)
+        reasons = [] if ok else ['read-back %s != requested %s' % (after, value)]
+
+        others = {n: (before_all.get(n), v) for n, v in after_all.items()
+                  if n != name and before_all.get(n) != v}
+        if others:
+            ok = False
+            reasons.append('also changed: ' + format_changes(others))
+        reason = '; '.join(reasons)
         if not ok:
-            self.logger.warning('%s write %s=%s not applied: %s', self.name, name, value, reason)
-        return WriteResult(ok=ok, name=name, before=before, requested=value, after=after, reason=reason)
+            self.logger.warning('%s write %s=%s not applied as requested: %s', self.name, name, value, reason)
+        return WriteResult(ok=ok, name=name, before=before, requested=value, after=after, reason=reason,
+                           others=others)
 
     def debug_data(self):
         return dict(resp=self._resp_table, char_w=self.char_handle_write, char_r=self.char_handle_notify)

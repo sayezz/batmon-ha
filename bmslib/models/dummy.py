@@ -118,14 +118,17 @@ class JKDummy:
     DEVICE_INFO = b'U\xaa\xeb\x90\x03\x15JK-B2A24S20P\x00\x00\x00\x0010.X-W\x00\x0010.02\x00\x00\x00\xdc\xc6/\x00\x06\x00\x00\x00JK pw123456\x00\x00\x00\x00\x001234\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00220606\x00\x001120303218\x000000\x00Input Userdata\x00\x00123456\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xc5\xaaU\x90\xeb\xc8\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00D'
 
     def __init__(self, is_new_11x=False, settings_frame: Union[bytes, None] = None,
-                 ignore_writes: bool = False, stream: bool = True):
+                 ignore_writes: bool = False, stream: bool = True, misroute: Union[dict, None] = None):
         """
         :param settings_frame: 300-byte 0x01 frame to answer with (default: the one in MSGS[0])
         :param ignore_writes: accept settings writes but don't apply them (a BMS that rejects)
         :param stream: on 0x96, also start the background thread that sends MSGS every second
+        :param misroute: {register: setting name}: a write to `register` lands on that other
+            setting instead (a register that means something else on this BMS)
         """
         self._callbacks = {}
         self.ignore_writes = ignore_writes
+        self.misroute = dict(misroute or {})
         self.stream = stream
         self._streaming = False
         self.writes = []  # (register, value bytes) of every settings write received
@@ -200,6 +203,9 @@ class JKDummy:
         value = bytes(payload[:setting.length])
         self.writes.append((setting.register, value))
         self.logger.info('dummy write %s (0x%02x) = %s', setting.name, setting.register, value.hex())
+        if setting.register in self.misroute:
+            from bmslib.models.jk_settings import SETTINGS
+            setting = SETTINGS[self.misroute[setting.register]]
         if self.ignore_writes or setting.read is None:
             return
         if setting.kind == 'switch':
