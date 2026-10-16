@@ -23,6 +23,7 @@ def _make(ignore_writes=False):
     bms.client = client
     bms.char_handle_write = JKBt.CHAR_UUID
     bms.is_new_11fw_32s = True
+    bms.settings_protocol_confirmed = True
     asyncio.run(client.start_notify(JKBt.CHAR_UUID, bms._notification_handler))
     return bms, client
 
@@ -295,7 +296,7 @@ def test_audit_failure_still_locks_and_reports(tmp_path, monkeypatch):
 
 def test_no_settings_support_noop(tmp_path):
     bms, client = _make()
-    bms.is_new_11fw_32s = False
+    bms.settings_protocol_confirmed = False
     svc, pub = _service(tmp_path, writable={'charge_utp'}), FakePublish()
     svc.enqueue('charge_utp', '3')
     _tick(svc, bms, pub)

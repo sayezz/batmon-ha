@@ -160,6 +160,11 @@ class JKBt(BtBms):
         self.char_handle_notify = None
         self.char_handle_write = None
         self.is_new_11fw_32s = None  # https://github.com/syssi/esphome-jk-bms/blob/main/esp32-ble-example.yaml#L6
+        # True only when the JK02_32S protocol is known, not guessed: the firmware version parsed
+        # as major >= 11, or the type is forced to 32s (JKBt_32s). is_new_11fw_32s alone is not
+        # enough, _decode_sample falls back to True when detection failed, and a JK02_24S BMS
+        # gives other meanings to the same registers (e.g. 0x21 is voltage calibration there).
+        self.settings_protocol_confirmed = False
         self._has_float_charger = None # used for the `float_charge` switch
         self.settings: Optional[dict] = None  # decoded 0x01 settings frame, see refresh_settings()
         self.settings_raw: Optional[bytes] = None
@@ -477,6 +482,7 @@ class JKBt(BtBms):
             try:
                 di = await self.fetch_device_info()
                 self.is_new_11fw_32s = int(di.sw_version.split('.')[0]) >= 11
+                self.settings_protocol_confirmed = self.is_new_11fw_32s
                 self.logger.info('%s SW ver %s detected frame ver: %s', self, di.sw_version,
                                  "32s (fw>=11)" if self.is_new_11fw_32s else "24s (fw<11)")
             except Exception as e:
@@ -532,8 +538,9 @@ class JKBt(BtBms):
         self._resp_table.pop(0x01, None)  # settings frame is stale now
 
     def supports_settings(self) -> bool:
-        # the register table in jk_settings is the JK02_32S one (firmware >= 11)
-        return self.is_new_11fw_32s is True
+        # the register table in jk_settings is the JK02_32S one (firmware >= 11); only when
+        # that protocol was detected or forced, never on the fallback guess (see __init__)
+        return self.settings_protocol_confirmed is True
 
     async def refresh_settings(self) -> dict:
         """Request a fresh 0x01 settings frame and decode it."""
@@ -620,6 +627,7 @@ class JKBt_32s(JKBt):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.is_new_11fw_32s = True
+        self.settings_protocol_confirmed = True  # the user forced the 32s type
 
 
 if __name__ == '__main__':
