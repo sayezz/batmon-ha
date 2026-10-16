@@ -135,8 +135,8 @@ def test_writable_setting_is_a_config_number():
     assert d['state_topic'] == f"{DEV}/settings/charge_utp"
     assert d['command_topic'] == f"homeassistant/number/{NODE}/charge_utp/set"
     assert d['device']['identifiers'] == [DEV]
-    # not writable -> no number entity
-    assert f"homeassistant/number/{NODE}/setting_cell_ovp/config" not in c.published
+    # not writable -> no number entity (only the empty config that removes a stale one)
+    assert c.published[f"homeassistant/number/{NODE}/setting_cell_ovp/config"] == ''
 
 
 def test_read_only_setting_is_a_diagnostic_sensor():
@@ -165,10 +165,28 @@ def test_writable_switch_setting_and_read_only_switch():
     assert 'command_topic' not in d
 
 
+def test_entity_of_the_other_component_is_removed():
+    """Same unique_id as number/switch when writable, sensor/binary_sensor when read-only: after
+    `settings_write` changed, an empty config removes the entity of the other component in HA."""
+    c = _settings_discovery(writable={'charge_utp', 'display_always_on'})
+    assert c.published[f"homeassistant/sensor/{NODE}/setting_charge_utp/config"] == ''
+    assert c.published[f"homeassistant/number/{NODE}/setting_cell_ovp/config"] == ''
+    assert c.published[f"homeassistant/binary_sensor/{NODE}/setting_display_always_on/config"] == ''
+    assert c.published[f"homeassistant/switch/{NODE}/setting_heating/config"] == ''
+    # the live ones are real configs
+    assert c.config(f"homeassistant/number/{NODE}/setting_charge_utp/config")['command_topic']
+    assert c.config(f"homeassistant/sensor/{NODE}/setting_cell_ovp/config")['entity_category'] == 'diagnostic'
+    # removal before the new config with the same unique_id
+    topics = [t for t, _, _ in c.log]
+    assert topics.index(f"homeassistant/sensor/{NODE}/setting_charge_utp/config") < \
+        topics.index(f"homeassistant/number/{NODE}/setting_charge_utp/config")
+    assert all(retain is False for _, _, retain in c.log)  # like all discovery here
+
+
 def test_only_readable_settings_are_discovered():
     c = _settings_discovery()
     names = {json.loads(p)['unique_id'].split('__setting_')[1]
-             for t, p in c.published.items() if '__setting_' in json.loads(p).get('unique_id', '')}
+             for t, p in c.published.items() if p and '__setting_' in json.loads(p).get('unique_id', '')}
     assert names == {n for n, s in SETTINGS.items() if s.read is not None}
 
 

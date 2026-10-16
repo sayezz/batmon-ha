@@ -476,6 +476,7 @@ def publish_jk_settings_discovery(client, device_topic, device_json, writable, e
     device_json = dict(device_json)
     remove_none_values(device_json)
     discovery_msg = {}
+    removals = {}
 
     for s in _readable_settings(exclude):
         is_switch = s.kind == 'switch'
@@ -489,17 +490,24 @@ def publish_jk_settings_discovery(client, device_topic, device_json, writable, e
             dm.update(payload_on="ON", payload_off="OFF")
         else:
             dm["unit_of_measurement"] = s.unit
+        writable_components = ('switch', 'number')
+        read_only_components = ('binary_sensor', 'sensor')
         if s.name in writable:
-            component = 'switch' if is_switch else 'number'
+            component = writable_components[0 if is_switch else 1]
+            other = read_only_components[0 if is_switch else 1]
             dm["entity_category"] = "config"
             dm["command_topic"] = _settings_command_topic(node_id, s.name)
             if not is_switch:
                 dm.update(mode="box", min=s.min, max=s.max, step=s.step)
         else:
-            component = 'binary_sensor' if is_switch else 'sensor'
+            component = read_only_components[0 if is_switch else 1]
+            other = writable_components[0 if is_switch else 1]
             dm["entity_category"] = "diagnostic"
             dm["expire_after"] = max(expire_after_seconds, SETTINGS_EXPIRE_MIN_S)
         remove_none_values(dm)
+        # same unique_id under the other component when `settings_write` changed: an empty config
+        # makes HA remove that (now stale) entity; sent before the new config
+        removals[f"homeassistant/{other}/{node_id}/setting_{s.name}/config"] = ''
         discovery_msg[f"homeassistant/{component}/{node_id}/setting_{s.name}/config"] = dm
 
     discovery_msg[f"homeassistant/sensor/{node_id}/settings_last_change/config"] = {
@@ -511,6 +519,8 @@ def publish_jk_settings_discovery(client, device_topic, device_json, writable, e
         "device": device_json,
     }
 
+    for topic, data in removals.items():
+        mqtt_single_out(client, topic, data)
     for topic, data in discovery_msg.items():
         mqtt_single_out(client, topic, json.dumps(data))
 
