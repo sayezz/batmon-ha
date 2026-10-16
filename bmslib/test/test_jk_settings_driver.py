@@ -2,6 +2,9 @@
 
 import asyncio
 import os
+import time
+
+from bmslib.models import jikong
 
 from bmslib.bms import DeviceInfo
 from bmslib.models.dummy import JKDummy
@@ -17,9 +20,16 @@ def _fixture():
         return f.read()
 
 
-def _make(ignore_writes=False):
+def _make(ignore_writes=False, settle=0.0, readback=0.0, drop_writes_within_s=0.0):
+    """settle/readback: per-instance WRITE_SETTLE_S/READBACK_DELAY_S (None: class default);
+    0 keeps the tests that are not about timing fast."""
     bms = JKBt("00:11:22:33:44:55", name="jk")
-    client = JKDummy(is_new_11x=True, settings_frame=_fixture(), ignore_writes=ignore_writes, stream=False)
+    if settle is not None:
+        bms.WRITE_SETTLE_S = settle
+    if readback is not None:
+        bms.READBACK_DELAY_S = readback
+    client = JKDummy(is_new_11x=True, settings_frame=_fixture(), ignore_writes=ignore_writes, stream=False,
+                     drop_writes_within_s=drop_writes_within_s)
     bms.client = client
     bms.char_handle_write = JKBt.CHAR_UUID
     bms.is_new_11fw_32s = True
@@ -192,3 +202,75 @@ def test_supports_settings():
     pb = JkPbUart.__new__(JkPbUart)
     pb.is_new_11fw_32s = True  # PB is always 32s, still no settings writes over RS485
     assert pb.supports_settings() is False
+
+
+def _record_timing(monkeypatch, bms, client):
+    """Log ('sleep', seconds) for every asyncio.sleep in jikong and ('tx', cmd) for every frame sent."""
+    events = []
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(d, *a, **kw):
+        events.append(('sleep', d))
+        await real_sleep(0)
+
+    monkeypatch.setattr(jikong.asyncio, 'sleep', fake_sleep)
+    write = client.write_gatt_char
+
+    async def logged_write(char, data, response=False):
+        events.append(('tx', data[4]))
+        await write(char, data, response)
+
+    client.write_gatt_char = logged_write
+    return events
+
+
+def _sleep_between(events, start, end):
+    return sum(d for kind, d in events[start:end] if kind == 'sleep')
+
+
+def test_write_waits_settle_after_refresh(monkeypatch):
+    # the BMS silently drops a write that arrives while it still answers a 0x96 settings query
+    # (hardware: JK-B2A8S30P fw 15.26 acks it with C8 01 01 anyway), so wait after the query
+    assert JKBt.WRITE_SETTLE_S == 1.0 and JKBt.READBACK_DELAY_S == 1.0
+    bms, client = _make(settle=None, readback=None)
+    events = _record_timing(monkeypatch, bms, client)
+    asyncio.run(bms.refresh_settings())
+    t_query = time.monotonic()
+    events.clear()
+    res = asyncio.run(bms.write_setting('charge_utp', 3.0))
+    elapsed = time.monotonic() - t_query
+    assert res.ok, res.reason
+    tx = [i for i, (kind, _) in enumerate(events) if kind == 'tx']
+    assert [events[i][1] for i in tx] == [0x18, 0x96], events
+    pre = _sleep_between(events, 0, tx[0])
+    assert JKBt.WRITE_SETTLE_S - elapsed <= pre <= JKBt.WRITE_SETTLE_S, events
+    assert _sleep_between(events, tx[0], tx[1]) >= JKBt.READBACK_DELAY_S, events
+
+
+def test_write_no_extra_wait_when_settled(monkeypatch):
+    bms, client = _make(settle=None, readback=None)
+    events = _record_timing(monkeypatch, bms, client)
+    asyncio.run(bms.refresh_settings())
+    bms._settings_query_t = time.monotonic() - JKBt.WRITE_SETTLE_S - 1  # query long ago
+    events.clear()
+    res = asyncio.run(bms.write_setting('charge_utp', 3.0))
+    assert res.ok, res.reason
+    tx = [i for i, (kind, _) in enumerate(events) if kind == 'tx']
+    assert events[tx[0]] == ('tx', 0x18)
+    assert _sleep_between(events, 0, tx[0]) == 0, events
+
+
+def test_write_applied_despite_busy_bms():
+    # dummy ignores writes within 0.5 s of its last 0x96 answer, like the real BMS
+    bms, client = _make(settle=0.6, readback=0.05, drop_writes_within_s=0.5)
+    asyncio.run(bms.refresh_settings())
+    res = asyncio.run(bms.write_setting('charge_utp', 3.0))
+    assert res.ok, res.reason
+    assert res.after == 3.0
+
+    bms, client = _make(settle=0.0, readback=0.05, drop_writes_within_s=0.5)
+    asyncio.run(bms.refresh_settings())
+    res = asyncio.run(bms.write_setting('charge_utp', 3.0))
+    assert res.ok is False
+    assert 'read-back' in res.reason
+    assert [reg for reg, _ in client.writes] == [0x18]  # it arrived, it was dropped

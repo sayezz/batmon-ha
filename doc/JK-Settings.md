@@ -158,7 +158,9 @@ how a failed write or read-back is handled is described below (read-back mismatc
 6. **Backup** of all settings, once per batmon run, before the first write. If the backup cannot be written,
    nothing is written.
 7. **Write** the one setting, wait, **read** all settings back and **compare**: the setting must have the new
-   value and no other setting may have changed. There are no retries.
+   value and no other setting may have changed. There are no retries. The write waits until ~1 s after the
+   last settings read and the read-back ~1 s after the write: the BMS drops a write that arrives while it is
+   still answering a settings query, although it acknowledges it. So one write takes ~2-3 s.
 8. **Audit**: every write attempt is logged to `settings_audit.jsonl`.
 
 ### Protection and recovery values: which one first

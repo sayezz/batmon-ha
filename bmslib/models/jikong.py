@@ -149,6 +149,12 @@ class JKBt(BtBms):
     # real disconnect is captured and hammers I/O. Collapse to one line / window.
     JUNK_LOG_PERIOD = 30
 
+    # Settings writes (write_setting). The BMS silently drops a write that arrives while it is
+    # still answering a 0x96 settings query, although it acknowledges it (AA 55 90 EB C8 01 01);
+    # seen on a JK-B2A8S30P fw 15.26: a write 1 s after the query applied, an immediate one not.
+    WRITE_SETTLE_S = 1.0  # min. seconds between the last 0x96 query and a settings write
+    READBACK_DELAY_S = 1.0  # seconds between the write and the read-back query
+
     def __init__(self, address, keep_alive=True, **kwargs):
         super().__init__(address, keep_alive=keep_alive, **kwargs)
         if kwargs.get('pin'):
@@ -174,6 +180,7 @@ class JKBt(BtBms):
         self._has_float_charger = None # used for the `float_charge` switch
         self.settings: Optional[dict] = None  # decoded 0x01 settings frame, see refresh_settings()
         self.settings_raw: Optional[bytes] = None
+        self._settings_query_t: Optional[float] = None  # time.monotonic() of the last answered 0x96
 
     def _notification_handler(self, _sender, data):
         data = bytes(data)
@@ -363,7 +370,10 @@ class JKBt(BtBms):
             frame = _jk_command(cmd, [])
             self.logger.debug("write %s", frame)
             await self.client.write_gatt_char(self.char_handle_write, data=frame)
-            return await self._fetch_futures.wait_for(resp, self.TIMEOUT)
+            res = await self._fetch_futures.wait_for(resp, self.TIMEOUT)
+            if cmd == 0x96:
+                self._settings_query_t = time.monotonic()
+            return res
 
     async def _write(self, address, value):
         frame = _jk_command(address, value)
@@ -573,8 +583,13 @@ class JKBt(BtBms):
         before_all = dict(self.settings)
         before = before_all.get(name)
 
+        # a write arriving while the BMS still answers the settings query is dropped (see WRITE_SETTLE_S)
+        if self._settings_query_t is not None:
+            wait = self.WRITE_SETTLE_S - (time.monotonic() - self._settings_query_t)
+            if wait > 0:
+                await asyncio.sleep(wait)
         await self._write(register, data)
-        await asyncio.sleep(0.3)  # give the BMS time to apply before reading back
+        await asyncio.sleep(self.READBACK_DELAY_S)  # give the BMS time to apply before reading back
         after_all = await self.refresh_settings()
         after = after_all.get(name)
 

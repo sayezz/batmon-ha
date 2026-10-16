@@ -218,6 +218,7 @@ def _jk_with_fixture(ignore_writes=False):
     with open(os.path.join(os.path.dirname(__file__), 'data', 'jk_settings_b2a8s30p_fw15.26.bin'), 'rb') as f:
         frame = f.read()
     bms = JKBt("00:11:22:33:44:55", name="jk1")
+    bms.WRITE_SETTLE_S = bms.READBACK_DELAY_S = 0  # write timing is covered in test_jk_settings_driver
     client = JKDummy(is_new_11x=True, settings_frame=frame, ignore_writes=ignore_writes, stream=False)
     bms.client = client
     bms.char_handle_write = JKBt.CHAR_UUID
