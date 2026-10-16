@@ -412,7 +412,7 @@ def _unknown_write(tmp_path, bms, now, name, payload, extra=None):
 def test_unknown_write_confirmed_with_other_change_locks(tmp_path):
     bms, client = _make()
     svc, pub = _unknown_write(tmp_path, bms, [T0], 'charge_utp', '3', extra=('display_always_on', True))
-    assert pub.texts[-1] == ('CONFIRMED charge_utp 3°C; also changed: display_always_on OFF -> ON; '
+    assert pub.texts[-1] == ('FAILED charge_utp 3°C applied but also changed: display_always_on OFF -> ON; '
                              'writes locked')
     assert svc.locked is True
     line = _audit_lines(tmp_path)[-1]

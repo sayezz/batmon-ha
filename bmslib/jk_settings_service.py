@@ -67,7 +67,7 @@ class JkSettingsService:
         self._last_refresh = None
         self._backed_up = False
         # a write interrupted by a BLE error may or may not have reached the BMS:
-        # (name, before, requested), resolved by the next successful refresh
+        # (name, before, requested, before_all), resolved by the next successful refresh
         self._unconfirmed = None
         self._seen_connect = None  # bms.connect_count at the last tick
 
@@ -230,7 +230,11 @@ class JkSettingsService:
         if others:
             self.locked = True  # before any file I/O
             also = 'also changed: ' + format_changes(others)
-            text += '; %s; writes locked' % also
+            if applied:
+                text = 'FAILED %s %s%s applied but %s; writes locked' % (
+                    name, format_value(name, after), unit, also)
+            else:
+                text += '; %s; writes locked' % also
             reason += '; ' + also
             logger.error('%s settings: %s (re-read after a BLE error)', self.alias, text)
         else:

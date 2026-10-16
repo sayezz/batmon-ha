@@ -61,7 +61,7 @@ All entities belong to the BMS device in Home Assistant.
   so there is no stale duplicate. This works while Home Assistant still knows the old entity from this run;
   an old entity left over from before a Home Assistant restart can be deleted by hand.
 * The entities are announced to Home Assistant (MQTT discovery) before their first values are sent, and the
-  values are sent again ~2 s later, so they show up right after batmon starts.
+  values are sent again with the next sample at least 2 s later, so they show up right after batmon starts.
 
 Settings are read when batmon starts, every 5 minutes, before each change and right after it. With
 `keep_alive: true` also after every reconnect to the BMS. Without `keep_alive` batmon connects anew for every
@@ -204,7 +204,8 @@ If the connection fails during the write or the read-back, batmon cannot tell wh
 Writes are **not** locked in this case. batmon reads the settings again on the next sample (after a failed read
 60 seconds later) and reports `CONFIRMED …` or `NOT APPLIED … (is …)`, also in
 `settings_audit.jsonl`. Like after a normal write, all settings are compared: if any other setting changed since
-the write, batmon adds `; also changed: …; writes locked` and locks writes (see above). Check the result before
+the write, batmon locks writes (see above) and reports `FAILED … applied but also changed: …; writes locked`
+(or `NOT APPLIED … (is …); also changed: …; writes locked`). Check the result before
 trying again.
 
 ## Files
